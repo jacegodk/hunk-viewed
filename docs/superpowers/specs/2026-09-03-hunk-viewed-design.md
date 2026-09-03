@@ -91,7 +91,7 @@ Colors come from the pane theme tokens the host passes as props.
 ~/work/hunk-viewed/
   package.json                 name, version, "hunk": { apiVersion: 16, extensions: ["./index.tsx"] }
   index.tsx                    factory: register pane, commands, mode, event handlers
-  src/reviewMirror.ts          files, filter, selectedFileId from events; useSyncExternalStore hook
+  src/reviewMirror.ts          files, filter, selectedFileId, filesModeActive; useSyncExternalStore hook
   src/viewedStore.ts           marks for the current repo; pure helpers; useSyncExternalStore hook
   src/viewedFile.ts            state file path, load, save (atomic), gc, merge
   src/patchHash.ts             sha256 of the patch text
@@ -115,6 +115,7 @@ startup { cwd }             -> viewedFile.load(repoKey) -> viewedStore
 changeset_loaded / session_reload -> reviewMirror.files; viewedStore.reconcile(files)
 selection_changed           -> reviewMirror.selectedFileId
 filter_changed              -> reviewMirror.filter
+files mode onEnter/onExit   -> reviewMirror.filesModeActive
 command v/J/K               -> viewedStore + ctx.navigation.selectFile
 viewedStore change          -> viewedFile.save(repoKey, record)  (every change)
 FilesPane                   -> reads reviewMirror + viewedStore via useSyncExternalStore
