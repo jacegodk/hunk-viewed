@@ -63,6 +63,23 @@ export default function (hunk: HunkExtensionAPI) {
 
   const isViewedFile = (file: ExtensionDiffFile) => isViewed(getViewedState(), file);
 
+  /**
+   * Files to search for the next/previous unviewed neighbor around `selectedFileId`.
+   *
+   * Normally the mirrored, filtered visible set — but the mirror's filter is derived from
+   * events and can lag the host's own filter state for one frame (e.g. right after a hard
+   * session reload). If the selection the host gave us is not in that derived set, fall back
+   * to the full file list so the jump still walks forward from the real selection instead of
+   * `findUnviewedNeighbor` treating it as "not found" and restarting from index 0.
+   */
+  function navigationFiles(selectedFileId: string | null): ExtensionDiffFile[] {
+    const visible = visibleFiles(getReviewMirror());
+    if (selectedFileId !== null && !visible.some((file) => file.id === selectedFileId)) {
+      return [...getReviewMirror().files];
+    }
+    return visible;
+  }
+
   hunk.on("startup", ({ cwd }, ctx) => ensureRepoLoaded(cwd, ctx.notify));
   hunk.on("changeset_loaded", ({ changeset }, ctx) => {
     ensureRepoLoaded(ctx.cwd, ctx.notify);
@@ -93,19 +110,21 @@ export default function (hunk: HunkExtensionAPI) {
     }
     const result = toggleViewed(file, new Date());
     if (result === "cleared") return;
-    const next = findUnviewedNeighbor(visibleFiles(getReviewMirror()), file.id, 1, isViewedFile);
+    const next = findUnviewedNeighbor(navigationFiles(file.id), file.id, 1, isViewedFile);
     if (next) ctx.navigation.selectFile(next.id);
-    else ctx.notify("All files viewed", "info");
+    else ctx.notify("No unviewed file after this one", "info");
   });
 
   hunk.registerCommand({ id: "nextUnviewed", title: "Next unviewed file", key: "J" }, (ctx) => {
-    const next = findUnviewedNeighbor(visibleFiles(getReviewMirror()), ctx.selection.file?.id ?? null, 1, isViewedFile);
+    const selectedFileId = ctx.selection.file?.id ?? null;
+    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, 1, isViewedFile);
     if (next) ctx.navigation.selectFile(next.id);
     else ctx.notify("No unviewed file after this one", "info");
   });
 
   hunk.registerCommand({ id: "previousUnviewed", title: "Previous unviewed file", key: "K" }, (ctx) => {
-    const previous = findUnviewedNeighbor(visibleFiles(getReviewMirror()), ctx.selection.file?.id ?? null, -1, isViewedFile);
+    const selectedFileId = ctx.selection.file?.id ?? null;
+    const previous = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, -1, isViewedFile);
     if (previous) ctx.navigation.selectFile(previous.id);
     else ctx.notify("No unviewed file before this one", "info");
   });
@@ -126,6 +145,10 @@ export default function (hunk: HunkExtensionAPI) {
     onEnter: () => setMirrorFilesModeActive(true),
     onExit: () => setMirrorFilesModeActive(false),
     onKey(key: ExtensionKeyEvent, ctx) {
+      // Some terminals report a shifted letter without the shift flag (hunk's
+      // `src/extension-api/keys.test.ts:122-123`), so check the extension's own commands first
+      // or a misreported J/K/v could be swallowed here instead of reaching them.
+      if (matchesKey("J", key) || matchesKey("K", key) || matchesKey("v", key)) return "pass";
       if (matchesKey("j", key) || matchesKey("down", key)) {
         ctx.commands.execute("hunk.review.nextFile");
         return "handled";

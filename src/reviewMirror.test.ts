@@ -10,20 +10,32 @@ import {
   visibleFiles,
 } from "./reviewMirror";
 
-function file(id: string, path: string): ExtensionDiffFile {
-  return { id, path, patch: "", stats: { additions: 0, deletions: 0 }, metadata: {}, agent: null };
+function file(id: string, path: string, extra: Partial<ExtensionDiffFile> = {}): ExtensionDiffFile {
+  return { id, path, patch: "", stats: { additions: 0, deletions: 0 }, metadata: {}, agent: null, ...extra };
 }
 
 beforeEach(() => resetReviewMirrorForTests());
 
 describe("fileMatchesFilter", () => {
   test("empty or blank filter matches everything", () => {
-    expect(fileMatchesFilter("src/a.ts", "")).toBe(true);
-    expect(fileMatchesFilter("src/a.ts", "   ")).toBe(true);
+    expect(fileMatchesFilter(file("1", "src/a.ts"), "")).toBe(true);
+    expect(fileMatchesFilter(file("1", "src/a.ts"), "   ")).toBe(true);
   });
-  test("is a case-insensitive trimmed substring match", () => {
-    expect(fileMatchesFilter("src/App.tsx", " app ")).toBe(true);
-    expect(fileMatchesFilter("src/App.tsx", "b.ts")).toBe(false);
+  test("is a case-insensitive trimmed substring match on the path", () => {
+    expect(fileMatchesFilter(file("1", "src/App.tsx"), " app ")).toBe(true);
+    expect(fileMatchesFilter(file("1", "src/App.tsx"), "b.ts")).toBe(false);
+  });
+  test("matches on the previous path", () => {
+    expect(fileMatchesFilter(file("1", "src/b.ts", { previousPath: "src/a.ts" }), "a.ts")).toBe(true);
+  });
+  test("matches on the agent summary", () => {
+    expect(fileMatchesFilter(file("1", "src/b.ts", { agent: { path: "src/b.ts", summary: "renamed helper", annotations: [] } }), "renamed")).toBe(
+      true,
+    );
+  });
+  test("does not match when the path, previous path, and agent summary all miss", () => {
+    const f = file("1", "src/b.ts", { previousPath: "src/a.ts", agent: { path: "src/b.ts", summary: "renamed helper", annotations: [] } });
+    expect(fileMatchesFilter(f, "nope")).toBe(false);
   });
 });
 

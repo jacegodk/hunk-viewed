@@ -57,7 +57,7 @@ export function resolveFileSidebarMode(contentWidth: number): FileSidebarMode {
 }
 
 /** Strip parser-added line endings from a diff path. */
-function normalizeDiffPath(path: string): string {
+export function normalizeDiffPath(path: string): string {
   return path.replace(/[\r\n]+$/u, "");
 }
 

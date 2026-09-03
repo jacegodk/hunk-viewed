@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ExtensionDiffFile } from "hunkdiff/extension";
+import { normalizeDiffPath } from "./sidebar/entries";
 
 /** What the extension knows about the live review, gathered from lifecycle events. */
 export interface ReviewMirror {
@@ -57,15 +58,27 @@ export function setMirrorFilesModeActive(active: boolean): void {
   publish({ filesModeActive: active });
 }
 
-/** Apply hunk's filter rule: lowercased, trimmed substring of the path; blank matches all. */
-export function fileMatchesFilter(path: string, filter: string): boolean {
+/** The file facts hunk's filter reads (`src/core/review/selectors.ts`). */
+export type FilterableFile = Pick<ExtensionDiffFile, "path" | "previousPath" | "agent">;
+
+/**
+ * Apply hunk's filter rule: a lowercased, trimmed substring match against the file's
+ * current path, previous path, and agent summary, joined with a space. Blank matches all.
+ * Mirrors `reviewFileMatchesFilter` in hunk's `src/core/review/selectors.ts`.
+ */
+export function fileMatchesFilter(file: FilterableFile, filter: string): boolean {
   const query = filter.trim().toLowerCase();
-  return query.length === 0 || path.toLowerCase().includes(query);
+  if (query.length === 0) return true;
+  return [normalizeDiffPath(file.path), file.previousPath ? normalizeDiffPath(file.previousPath) : undefined, file.agent?.summary]
+    .filter((part): part is string => Boolean(part))
+    .join(" ")
+    .toLowerCase()
+    .includes(query);
 }
 
 /** Return the files hunk currently shows, in review order. */
 export function visibleFiles(current: ReviewMirror): ExtensionDiffFile[] {
-  return current.files.filter((file) => fileMatchesFilter(file.path, current.filter));
+  return current.files.filter((file) => fileMatchesFilter(file, current.filter));
 }
 
 /** Reset module state between tests. */
