@@ -42,6 +42,17 @@ Rebind in `~/.config/hunk/config.toml`:
   (`%LOCALAPPDATA%\hunk\viewed.json` on Windows). Marks older than 30 days are dropped.
 - Viewed files stay in the review stream and in the pane; only `v`, `J`, and `K` skip them.
 
+## Known limitations
+
+- The pane's `n/m viewed` counter counts the files the pane shows. With a filter active, it is
+  progress within the filter, not the whole changeset.
+- The extension mirrors hunk's filter from events. After a hard reload with a filter active, the
+  mirror can lag until the filter is edited again. When that happens, `J`/`K` fall back to the
+  full file list if the selected file is not in the mirrored view.
+- Row widths are measured in code points. Wide file names (CJK, emoji) can push the stats column.
+- `hunk extension install <path>` clones the path's committed HEAD. Uncommitted work is not
+  installed. Use `--extension <path>` while developing.
+
 ## Development
 
 ```bash

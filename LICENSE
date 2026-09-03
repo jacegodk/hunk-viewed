@@ -5,6 +5,10 @@ Copyright (c) 2026 Jens Andersen
 Portions of src/sidebar/ are adapted from hunk (https://github.com/modem-dev/hunk),
 Copyright (c) Modem Labs Inc., MIT License.
 
+The state-file handling in src/viewedFile.ts follows the design of hunk's
+src/core/process/appStateFile.ts: atomic stage-and-rename, mode 0600, and a
+`.corrupt` quarantine for unreadable files.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
