@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export interface ViewedEntry {
   /** sha256 hex of the file's patch when it was marked. */
@@ -17,13 +17,16 @@ export interface ViewedFileDocument {
 
 export const VIEWED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Resolve the state file path: $XDG_STATE_HOME/hunk/viewed.json, %LOCALAPPDATA% on Windows, else ~/.local/state. */
+/**
+ * Resolve the state file path: $XDG_STATE_HOME/hunk/viewed.json, %LOCALAPPDATA% on Windows,
+ * else ~/.local/state. Per the XDG spec, a relative XDG_STATE_HOME is invalid and ignored.
+ */
 export function resolveViewedFilePath(
   env: NodeJS.ProcessEnv,
   platform: string,
   homeDir: string,
 ): string {
-  if (env.XDG_STATE_HOME) {
+  if (env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)) {
     return join(env.XDG_STATE_HOME, "hunk", "viewed.json");
   }
   if (platform === "win32" && env.LOCALAPPDATA) {

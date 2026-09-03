@@ -8,7 +8,7 @@
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import type { ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
+import type { ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
 import { matchesKey } from "hunkdiff/extension";
 import { findUnviewedNeighbor } from "./src/navigation";
 import {
@@ -28,22 +28,35 @@ const FILES_MODE_ID = "files";
 /** Register the hunk-viewed pane, commands, keyboard mode, and event handlers. */
 export default function (hunk: HunkExtensionAPI) {
   const stateFilePath = resolveViewedFilePath(process.env, process.platform, homedir());
+  let saveFailureNotified = false;
 
-  /** Load this repo's marks once, keyed by the canonical cwd. */
-  function ensureRepoLoaded(cwd: string, notify: (message: string, type: "warning") => void) {
-    if (getViewedState().repoKey !== null) return;
+  /**
+   * Load the marks for `cwd`'s repo when it differs from the one currently loaded, and wire
+   * persistence to `notify`. A reload into a different repo (a new `startup` on the same
+   * module instance) must reload marks and re-point saves at the new caller's `notify`,
+   * not keep serving the previous repo's state under the new repo's identity.
+   */
+  function ensureRepoLoaded(cwd: string, notify: ExtensionContext["notify"]) {
     let repoKey: string;
     try {
       repoKey = realpathSync(cwd);
     } catch {
       repoKey = cwd;
     }
-    loadRepo(repoKey, readRepoFiles(stateFilePath, repoKey, hunk.log));
+    if (getViewedState().repoKey !== repoKey) {
+      loadRepo(repoKey, readRepoFiles(stateFilePath, repoKey, hunk.log));
+    }
     setPersist((key, files) => {
       try {
         writeRepoFiles(stateFilePath, key, files, new Date(), hunk.log);
+        saveFailureNotified = false;
       } catch (error) {
-        notify(`hunk-viewed: could not save ${stateFilePath}: ${error instanceof Error ? error.message : String(error)}`, "warning");
+        const message = error instanceof Error ? error.message : String(error);
+        hunk.log(`hunk-viewed: could not save ${stateFilePath}: ${message}`);
+        if (!saveFailureNotified) {
+          saveFailureNotified = true;
+          notify(`hunk-viewed: could not save ${stateFilePath}: ${message}`, "warning");
+        }
       }
     });
   }

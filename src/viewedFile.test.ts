@@ -33,6 +33,12 @@ describe("resolveViewedFilePath", () => {
       join("C:\\Users\\u\\AppData\\Local", "hunk", "viewed.json"),
     );
   });
+
+  test("ignores a relative XDG_STATE_HOME and falls back to the default", () => {
+    expect(resolveViewedFilePath({ XDG_STATE_HOME: "state" }, "linux", "/home/u")).toBe(
+      join("/home/u", ".local", "state", "hunk", "viewed.json"),
+    );
+  });
 });
 
 describe("readRepoFiles", () => {
