@@ -27,15 +27,15 @@ export function getReviewMirror(): ReviewMirror {
   return mirror;
 }
 
+/** Subscribe to mirror changes; returns the unsubscribe function. */
+export function subscribeReviewMirror(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /** Read the mirror from a React component. */
 export function useReviewMirror(): ReviewMirror {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    getReviewMirror,
-  );
+  return useSyncExternalStore(subscribeReviewMirror, getReviewMirror);
 }
 
 /** Replace the changeset after `changeset_loaded` or `session_reload`. */

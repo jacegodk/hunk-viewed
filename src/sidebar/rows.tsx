@@ -23,8 +23,7 @@ function fileStateIcon(entry: FileListEntry, theme: ExtensionPaneTheme): { icon:
     case "rename-pure":
     case "rename-changed":
       return { icon: "R", color: theme.fileRenamed };
-    case "change":
-    case undefined:
+    default:
       return { icon: "M", color: theme.fileModified };
   }
 }

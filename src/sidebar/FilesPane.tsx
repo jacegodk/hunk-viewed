@@ -33,7 +33,10 @@ export function FilesPane({ files, selectedFileId, theme, width, actions }: Exte
     return map;
   }, [files, viewed]);
   const viewedCount = useMemo(() => [...viewedByFileId.values()].filter(Boolean).length, [viewedByFileId]);
-  const statsWidth = Math.max(0, ...entries.map((entry) => (entry.kind === "file" ? sidebarEntryStatsWidth(entry) : 0)));
+  const statsWidth = useMemo(
+    () => entries.reduce((max, entry) => Math.max(max, entry.kind === "file" ? sidebarEntryStatsWidth(entry) : 0), 0),
+    [entries],
+  );
 
   useEffect(() => {
     if (!selectedFileId) return;
