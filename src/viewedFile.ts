@@ -33,21 +33,24 @@ export function resolveViewedFilePath(
 }
 
 /** Parse the state file, or return an empty document when it is missing or unusable. */
-function readDocument(filePath: string, log: (message: string) => void): ViewedFileDocument {
+function readDocument(
+  filePath: string,
+  log: (message: string) => void,
+): { document: ViewedFileDocument; wasUnusable: boolean } {
   const empty: ViewedFileDocument = { version: 1, repos: {} };
   if (!existsSync(filePath)) {
-    return empty;
+    return { document: empty, wasUnusable: false };
   }
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<ViewedFileDocument>;
     if (parsed.version !== 1 || typeof parsed.repos !== "object" || parsed.repos === null) {
       log(`hunk-viewed: ignoring ${filePath}: unsupported format`);
-      return empty;
+      return { document: empty, wasUnusable: true };
     }
-    return { version: 1, repos: parsed.repos };
+    return { document: { version: 1, repos: parsed.repos }, wasUnusable: false };
   } catch (error) {
     log(`hunk-viewed: ignoring ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-    return empty;
+    return { document: empty, wasUnusable: true };
   }
 }
 
@@ -57,7 +60,8 @@ export function readRepoFiles(
   repoKey: string,
   log: (message: string) => void,
 ): RepoFiles {
-  return readDocument(filePath, log).repos[repoKey]?.files ?? {};
+  const { document } = readDocument(filePath, log);
+  return document.repos[repoKey]?.files ?? {};
 }
 
 /** Drop entries older than VIEWED_TTL_MS. */
@@ -77,10 +81,20 @@ function pruneExpired(files: RepoFiles, now: Date): RepoFiles {
  *
  * Rereads the file first so sessions in other repos keep their marks. Every
  * repo's expired entries are pruned on the way through, and a repo left with
- * no entries is removed.
+ * no entries is removed. If the file exists but is corrupt or has an unsupported
+ * version, quarantines it as `${filePath}.corrupt` and logs the issue.
  */
-export function writeRepoFiles(filePath: string, repoKey: string, files: RepoFiles, now: Date): void {
-  const document = readDocument(filePath, () => {});
+export function writeRepoFiles(
+  filePath: string,
+  repoKey: string,
+  files: RepoFiles,
+  now: Date,
+  log: (message: string) => void,
+): void {
+  const { document, wasUnusable } = readDocument(filePath, log);
+  if (wasUnusable && existsSync(filePath)) {
+    renameSync(filePath, `${filePath}.corrupt`);
+  }
   const repos: ViewedFileDocument["repos"] = {};
   for (const [key, record] of Object.entries(document.repos)) {
     if (key === repoKey) continue;

@@ -94,6 +94,7 @@ describe("writeRepoFiles", () => {
         "old.ts": { hash: "o", at: "2026-07-01T00:00:00.000Z" },
       },
       now,
+      () => {},
     );
 
     const doc = JSON.parse(readFileSync(path, "utf8"));
@@ -106,8 +107,8 @@ describe("writeRepoFiles", () => {
 
   test("creates missing directories and merges with the current contents", () => {
     const path = join(dir, "nested", "hunk", "viewed.json");
-    writeRepoFiles(path, "/other", { "o.ts": { hash: "x", at: now.toISOString() } }, now);
-    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now);
+    writeRepoFiles(path, "/other", { "o.ts": { hash: "x", at: now.toISOString() } }, now, () => {});
+    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now, () => {});
 
     const doc = JSON.parse(readFileSync(path, "utf8"));
     expect(Object.keys(doc.repos).sort()).toEqual(["/other", "/repo"]);
@@ -115,8 +116,8 @@ describe("writeRepoFiles", () => {
 
   test("removes a repo record that becomes empty", () => {
     const path = join(dir, "viewed.json");
-    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now);
-    writeRepoFiles(path, "/repo", {}, now);
+    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now, () => {});
+    writeRepoFiles(path, "/repo", {}, now, () => {});
     const doc = JSON.parse(readFileSync(path, "utf8"));
     expect(doc.repos).toEqual({});
   });
@@ -124,7 +125,38 @@ describe("writeRepoFiles", () => {
   test("writes with mode 0600 on posix", () => {
     if (process.platform === "win32") return;
     const path = join(dir, "viewed.json");
-    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now);
+    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now, () => {});
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  test("quarantines a corrupt file and logs", () => {
+    const path = join(dir, "viewed.json");
+    writeFileSync(path, "{not json");
+    const logs: string[] = [];
+    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now, (m) => logs.push(m));
+
+    expect(logs.length).toBe(1);
+    expect(readFileSync(`${path}.corrupt`, "utf8")).toBe("{not json");
+    const doc = JSON.parse(readFileSync(path, "utf8"));
+    expect(doc.repos).toEqual({
+      "/repo": { files: { "a.ts": { hash: "h", at: now.toISOString() } } },
+    });
+  });
+
+  test("quarantines a wrong-version file", () => {
+    const path = join(dir, "viewed.json");
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 2, repos: { "/other": { files: { "o.ts": { hash: "x", at: now.toISOString() } } } } }),
+    );
+    const logs: string[] = [];
+    writeRepoFiles(path, "/repo", { "a.ts": { hash: "h", at: now.toISOString() } }, now, (m) => logs.push(m));
+
+    expect(logs.length).toBe(1);
+    expect(readFileSync(`${path}.corrupt`, "utf8")).toContain("version");
+    const doc = JSON.parse(readFileSync(path, "utf8"));
+    expect(doc.repos).toEqual({
+      "/repo": { files: { "a.ts": { hash: "h", at: now.toISOString() } } },
+    });
   });
 });
