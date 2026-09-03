@@ -251,7 +251,7 @@ cd ~/work/hunk-viewed && git add src/patchHash.ts src/patchHash.test.ts && git c
   - `interface ViewedFileDocument { version: 1; repos: Record<string, { files: RepoFiles }> }`
   - `resolveViewedFilePath(env: NodeJS.ProcessEnv, platform: string, homeDir: string): string`
   - `readRepoFiles(filePath: string, repoKey: string, log: (message: string) => void): RepoFiles`
-  - `writeRepoFiles(filePath: string, repoKey: string, files: RepoFiles, now: Date): void`
+  - `writeRepoFiles(filePath: string, repoKey: string, files: RepoFiles, now: Date, log: (message: string) => void): void` — when the existing file is unusable (bad JSON or wrong version) it logs, moves the file aside to `<path>.corrupt`, and writes only this repo's record.
   - `const VIEWED_TTL_MS = 30 * 24 * 60 * 60 * 1000`
 
 - [ ] **Step 1: Write the failing tests**
@@ -1775,7 +1775,7 @@ export default function (hunk: HunkExtensionAPI) {
     loadRepo(repoKey, readRepoFiles(stateFilePath, repoKey, hunk.log));
     setPersist((key, files) => {
       try {
-        writeRepoFiles(stateFilePath, key, files, new Date());
+        writeRepoFiles(stateFilePath, key, files, new Date(), hunk.log);
       } catch (error) {
         notify(`hunk-viewed: could not save ${stateFilePath}: ${error instanceof Error ? error.message : String(error)}`, "warning");
       }
