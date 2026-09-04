@@ -199,32 +199,59 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
   "the file is viewed". `layout` returns one row, `✓ viewed  <n> hunks  +a -d` (check tone
   `added`, rest `muted`), with every hunk mapped to row 0. A file with no hunks returns zero rows
   and folds to its header alone.
-- `v` on an unviewed file: mark, `ctx.fileViews.select("viewed")` on the selected file, then jump
+- `v` on an unviewed file: mark, `ctx.fileViews.select("viewed")` on the selected file (skipped
+  in single-file mode, since retargeting drops the file from the changeset anyway), then jump
   to the next unviewed file. `v` on a viewed file: clear the mark, `ctx.fileViews.select(null)`,
   stay.
-- New menu command `hunk-viewed.foldViewed`, "Fold viewed files", no key: if the selected file
-  is not viewed, select the first viewed visible file; apply the view with `fileViews.select`;
-  run `hunk.view.applyFilePresentationToAllMatching`; reselect the original file. Notice when
-  no viewed file exists.
+- `layout` re-checks `isViewed` itself and returns `null` when the file is not viewed, rather
+  than trusting `matches` to have gated every call: hunk can ask a view to re-derive a stale
+  presentation (e.g. right after `clearRepo`), and a declined layout falls back to the raw diff.
+- `clearRepo` calls `ctx.fileViews.refresh("viewed")` after clearing, so every row still
+  presenting the folded view redraws raw instead of showing a stale "✓ viewed" line.
+- New menu command `hunk-viewed.foldViewed`, "Fold viewed files", no key. `ctx.fileViews.select`
+  and `ctx.navigation.selectFile` only dispatch React state; the bulk command
+  (`hunk.view.applyFilePresentationToAllMatching`) only enables once the selected file has
+  actually rendered that presentation, which does not happen synchronously within the handler.
+  So the precondition is stricter than "select any viewed file for the user": the file already
+  selected when the command runs must already be viewed (notice otherwise), and single-file mode
+  must be inactive (notice otherwise, since retargeting empties the changeset before a fold could
+  apply to more than one file). The handler is `async`: it selects the view, then polls
+  `ctx.commands.isEnabled(...)` every 16 ms (up to 20 tries) until the bulk command is enabled,
+  then executes it — a warning notice if the wait times out or the execute call itself fails.
 - The `F` command and the `files` keyboard mode are removed. `filesModeActive` leaves the mirror.
 - Limits: the host header bar keeps its normal colors; folding is per runtime file id, so a
   reload can unfold files until "Fold viewed files" runs again.
 
 ## C. Single-file mode
 
-- New command `hunk-viewed.singleFile`, key `o`, title "Single-file mode". It toggles the
-  keyboard mode `hunk-viewed:single` ("Single file"): enter when inactive, exit when active.
-  `Esc` also exits (host owned).
+- New command `hunk-viewed.singleFile`, key `o`, title "Single-file mode". If the mode is
+  already active it exits. Otherwise it guards on a reloadable input
+  (`ctx.commands.isEnabled("hunk.app.refresh")`; a notice and no state change if that is false,
+  e.g. a piped patch) and, only once that passes, seeds the target itself
+  (`ctx.selection.file?.path`, falling back to the mirror's first file) before entering the
+  keyboard mode `hunk-viewed:single` ("Single file"). Seeding happens in the command rather than
+  the mode's `onEnter` because the host's selection can be debounced by the time `onEnter` runs;
+  the command's own `ctx.selection.file` is the fresh value. `Esc` also exits (host owned).
 - State module `src/singleFile.ts`: `{ active: boolean; targetPath: string | null;
-  pendingPath: string | null }` with a subscribe hook. `reviewMirror` gains `allFiles`, the
-  full changeset the transform saw before dropping files.
+  pendingPath: string | null }` with a subscribe hook; `setSingleFileTarget`/`setSingleFilePending`
+  are no-ops when the value would not change. `reviewMirror` gains `allFiles`, the full changeset
+  the transform saw before dropping files.
 - `hunk.transformChangeset`: always records `allFiles`; when active with a target, returns the
   changeset with only the file whose `path` equals the target. If the target is missing, it
-  returns the changeset unchanged.
-- Mode `onEnter`: target = selected file's path (or the first file), `active = true`, run
-  `hunk.app.refresh`. `onExit`: `active = false`, target and pending cleared, refresh.
+  returns the changeset unchanged. The transform's own `changeset.files` never carries
+  `changeType`/`hunks` (hunk fills those in later, on the read-only payload lifecycle events
+  carry), so `allFiles` is light-projected: a `changeset_loaded`/`session_reload` handler caches
+  that payload by path (skipped while single-file mode is active, since a mode-driven reload only
+  ever renders the one target file) and the transform merges `changeType`/`hunks` back in from
+  that cache when it records `allFiles`.
+- Mode `onEnter` only runs `hunk.app.refresh` — the target is already set by the `singleFile`
+  command. `onExit`: `active = false`, target and pending cleared, refresh.
 - Mode keys: `,` / `.` move the target to the previous / next file in `allFiles` (viewed or not)
-  and refresh; `enter` loads `pendingPath` if set; everything else passes.
+  and refresh, or notify ("No file before/after this one") at either end; `enter` loads
+  `pendingPath` and refreshes if set, otherwise passes through untouched; everything else passes.
+  Every retarget that reloads (`,`/`.`, `enter`, and `J`/`K`/`v` below) warns
+  "This input cannot be reloaded, so single-file mode is unavailable" if the refresh command
+  itself returns `false`.
 - In single mode, `J`, `K`, and `v` compute their target over `allFiles` and switch by setting
   the target and refreshing instead of `selectFile`.
 - Pane in single mode: rows come from `allFiles`; the highlighted row is the target; the counter

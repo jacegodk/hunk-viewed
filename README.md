@@ -20,9 +20,11 @@ Requires hunk 0.21 or newer (extension API 16).
 | `v`   | Mark the selected file viewed and jump to the next unviewed file. On a viewed file: clear the mark. |
 | `J`   | Next unviewed file                                                        |
 | `K`   | Previous unviewed file                                                    |
-| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. |
+| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. In single-file mode `J`/`K`/`v` switch the shown file instead of moving the selection. |
 
-**Extensions → Fold viewed files** folds every viewed file to one line; `v` folds and unfolds the file it marks.
+**Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
+
+`v` folds and unfolds the file it marks (outside single-file mode).
 
 **Extensions → Clear viewed marks for this repo** removes every mark for the current repo.
 
@@ -55,6 +57,8 @@ Rebind in `~/.config/hunk/config.toml`:
 - `hunk extension install <path>` clones the path's committed HEAD. Uncommitted work is not
   installed. Use `--extension <path>` while developing.
 - Folding is per loaded file, so after a reload run Fold viewed files again. The header bar of a folded file keeps its normal colors. Single-file mode reloads the review on every switch and starts at the top of the file.
+- Single-file mode needs a reloadable input (not a piped patch).
+- Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
 
 ## Development
 
