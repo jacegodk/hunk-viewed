@@ -281,8 +281,15 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 - Renders two columns (old | new) when hunk's layout is split, one column when stacked: the
   extension mirrors hunk's own resolved layout from `layout_changed`
   (`{ mode, layout: "split" | "stack" }`, fired only on changes after startup) and picks
-  `buildFullFileLayout`'s `columns` option from it, falling back to a width heuristic until the
-  first event arrives.
+  `buildFullFileLayout`'s `columns` option from it. Because that event fires only on a change,
+  the width heuristic (file-view body width >= 116, matching hunk's own terminal-width-120 split
+  threshold minus the sidebar and pane insets) is the fallback for as long as hunk has reported no
+  layout change in the session, not just a brief startup window.
+- Split-column pairing assumes a hunk's removed lines precede its added lines within one change,
+  matching git's own unified-diff hunk order. A split row's five spans and up to `2 * colWidth +
+  3` characters are checked against hunk's layout-validator caps before returning; a file or width
+  that would exceed them keeps the single-column build instead. Split columns fit long lines to
+  the column width with a `…` marker; the single-column build never truncates.
 
 ## E. Navigation policy
 

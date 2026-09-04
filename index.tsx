@@ -133,11 +133,18 @@ export default function (hunk: HunkExtensionAPI) {
     if (returnPath) {
       const file = changeset.files.find((f) => f.path === returnPath);
       clearSingleFileReturn();
-      // Deferred: hunk's React effects for the new changeset have not all flushed when this
-      // handler runs, so selecting synchronously can miss the file silently. `ctx.navigation` is
-      // a live guard, safe to call after the handler returns; `selectFile` aligns the file's
-      // header to the top even when it is already selected.
-      if (file) setTimeout(() => ctx.navigation.selectFile(file.id), 0);
+      // `session_reload` fires after every child layout effect for the new changeset has
+      // committed, so a synchronous `selectFile` here would already resolve against the right
+      // state. What is not settled yet is the *scroll*: folded/full file-view render plans
+      // re-prepare asynchronously after a reload, so the header's top-of-file reveal can still
+      // move after this handler returns. Select twice — once deferred past the current tick, and
+      // once more once those plans have had time to resolve — since selecting an already-selected
+      // file still bumps hunk's file-top reveal token and re-aligns the header. `ctx.navigation`
+      // is a live guard, safe to call after the handler returns.
+      if (file) {
+        setTimeout(() => ctx.navigation.selectFile(file.id), 0);
+        setTimeout(() => ctx.navigation.selectFile(file.id), 60);
+      }
     }
   });
   hunk.on("selection_changed", ({ fileId }) => setMirrorSelectedFileId(fileId));
@@ -209,9 +216,12 @@ export default function (hunk: HunkExtensionAPI) {
       if (hunks.length !== (input.file.hunks?.length ?? 0)) return null;
       const document = await input.readDocument("new");
       if (document === null || input.signal.aborted) return null;
-      // hunk only announces its resolved layout on a change after startup (`layout_changed`); until
-      // one arrives, guess from the row width the same way hunk's own `auto` mode would.
-      const layout = getReviewMirror().resolvedLayout ?? (input.width >= 100 ? "split" : "stack");
+      // hunk only announces its resolved layout on a change after startup (`layout_changed`), so
+      // this heuristic applies for the whole session whenever hunk has not reported one, not just
+      // until a first event arrives. hunk's own `auto` mode splits at terminal width >= 120; the
+      // file view itself gets `reviewBounds.width - 2`, and the sidebar (34 cols) disappears below
+      // terminal width 160 — so the file-view body width at the split threshold is 116.
+      const layout = getReviewMirror().resolvedLayout ?? (input.width >= 116 ? "split" : "stack");
       return buildFullFileLayout(document, hunks, { columns: layout === "split" ? "split" : "single", width: input.width });
     },
   });

@@ -459,14 +459,13 @@ describe("single-file mode", () => {
     fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, ctx);
     fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, ctx);
 
-    // The selection is deferred past hunk's React effects for the new changeset, so it must not
-    // have happened yet synchronously within the handler.
-    expect(selectedIds).toEqual([]);
     expect(getSingleFileState().returnPath).toBeNull();
 
-    await new Promise((r) => setTimeout(r, 0));
+    // The handler selects the file twice: once deferred past the current tick, and once more
+    // after file-view render plans have had time to resolve, to re-align the header's scroll.
+    await new Promise((r) => setTimeout(r, 70));
 
-    expect(selectedIds).toEqual(["2"]);
+    expect(selectedIds).toEqual(["2", "2"]);
   });
 
   test("o notifies when the current input cannot be reloaded, and does not enter the mode", () => {
@@ -652,11 +651,11 @@ describe("full file view", () => {
     };
 
     fake.events.get("layout_changed")!({ mode: "auto", layout: "split" }, eventContext(repoDir));
-    const split = await view.layout({ file, width: 41, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    const split = await view.layout({ file, width: 48, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
     expect(split!.rows.some((row) => row.spans.map((s) => s.text).join("").includes(" │ "))).toBe(true);
 
     fake.events.get("layout_changed")!({ mode: "auto", layout: "stack" }, eventContext(repoDir));
-    const stacked = await view.layout({ file, width: 41, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    const stacked = await view.layout({ file, width: 48, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
     expect(stacked!.rows.some((row) => row.spans.map((s) => s.text).join("").includes(" │ "))).toBe(false);
   });
 

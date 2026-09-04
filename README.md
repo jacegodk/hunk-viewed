@@ -57,7 +57,6 @@ Rebind in `~/.config/hunk/config.toml`:
 - The extension mirrors hunk's filter from events. After a hard reload with a filter active, the
   mirror can lag until the filter is edited again. When that happens, `J`/`K` fall back to the
   full file list if the selected file is not in the mirrored view.
-- Row widths are measured in code points. Wide file names (CJK, emoji) can push the stats column.
 - `hunk extension install <path>` clones the path's committed HEAD. Uncommitted work is not
   installed. Use `--extension <path>` while developing.
 - Folding is per loaded file, so after a reload run Fold viewed files again. The header bar of a folded file keeps its normal colors. Single-file mode reloads the review on every switch and starts at the top of the file.
@@ -68,7 +67,13 @@ Rebind in `~/.config/hunk/config.toml`:
 - The full-file view does not follow you across single-file mode switches; press F again.
 - The full-file view's side-by-side columns follow hunk's own split/stack layout. Hunk re-lays
   out the view automatically on a width change, but a pure layout-mode switch (`1`/`2`/`0`) may
-  not re-render it; press `F` twice to force it.
+  not re-render it; press `F` twice to force it. Until hunk reports a layout change for the
+  session (`layout_changed` fires only on a change after startup, not on the initial resolution),
+  the extension falls back to a width heuristic; this is the steady state for most sessions, not
+  just a brief startup window. Between the mode switch and the next `F` press, an already-open
+  full-file view can show one file split and another stacked.
+- Split columns fit long lines to the column width and truncate with `…`; the single-column view
+  never truncates.
 - Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
 
 ## Development
