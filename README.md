@@ -21,7 +21,7 @@ Requires hunk 0.21 or newer (extension API 16).
 | `F`   | Toggle full file: the whole file as a diff with unlimited context; `F` again returns to the normal diff |
 | `J`   | Next file. In single-file mode: next unviewed file.                      |
 | `K`   | Previous file. In single-file mode: previous unviewed file.              |
-| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
+| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves and keeps that file selected. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
 
 **Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
 

@@ -257,6 +257,7 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
   is over `allFiles`; a click records `pendingPath` and shows the notice
   `Enter loads <name>`.
 - Cost: each toggle and switch is a reload. Scroll starts at the top of the file.
+- Leaving the mode reselects the file that was shown, at the top of the view.
 
 ---
 

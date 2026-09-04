@@ -69,13 +69,14 @@ function makeChangeset(files: ExtensionDiffFile[]): ExtensionChangeset {
   return { id: "cs", sourceLabel: "test", title: "test changeset", files };
 }
 
-function eventContext(cwd: string, notify: (message: string, type?: string) => void = () => {}): ExtensionEventContext {
+/** Build an event context; `selectedIds`, if given, records every `navigation.selectFile` call. */
+function eventContext(cwd: string, notify: (message: string, type?: string) => void = () => {}, selectedIds: string[] = []): ExtensionEventContext {
   return {
     cwd,
     notify,
     panes: {},
     sidebars: {},
-    navigation: {},
+    navigation: { selectFile: (id: string) => selectedIds.push(id) },
     dialogs: {},
     events: { emit: () => {} },
   } as unknown as ExtensionEventContext;
@@ -418,15 +419,32 @@ describe("single-file mode", () => {
     // The command itself seeds the target from the (possibly debounced) selection at invocation
     // time, so it is already set before the mode's onEnter ever runs.
     expect(calls.modeActive).toBe(true);
-    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: null });
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: null, returnPath: null });
     const mode = fake.keyboardModes.get("single")!;
     mode.onEnter!(modeContext(calls));
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
     single(commandContext(files[1]!, [], [], calls));
     expect(calls.modeActive).toBe(false);
     mode.onExit!(modeContext(calls));
-    expect(getSingleFileState().active).toBe(false);
+    expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null, returnPath: "b.ts" });
     expect(calls.executed).toEqual(["hunk.app.refresh", "hunk.app.refresh"]);
+  });
+
+  test("leaving the mode reselects the file it was showing once the exit reload's session_reload lands", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    enterSingleFile("b.ts");
+    const mode = fake.keyboardModes.get("single")!;
+    mode.onExit!(modeContext(createCalls()));
+    expect(getSingleFileState().returnPath).toBe("b.ts");
+
+    const selectedIds: string[] = [];
+    fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, eventContext(repoDir, () => {}, selectedIds));
+
+    expect(selectedIds).toEqual(["2"]);
+    expect(getSingleFileState().returnPath).toBeNull();
   });
 
   test("o notifies when the current input cannot be reloaded, and does not enter the mode", () => {

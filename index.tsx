@@ -25,7 +25,15 @@ import {
   setMirrorSelectedFileId,
   visibleFiles,
 } from "./src/reviewMirror";
-import { applySingleFileTransform, enterSingleFile, exitSingleFile, getSingleFileState, neighborPath, setSingleFileTarget } from "./src/singleFile";
+import {
+  applySingleFileTransform,
+  clearSingleFileReturn,
+  enterSingleFile,
+  exitSingleFile,
+  getSingleFileState,
+  neighborPath,
+  setSingleFileTarget,
+} from "./src/singleFile";
 import { FilesPane } from "./src/sidebar/FilesPane";
 import { parseUnifiedPatch } from "./src/unifiedPatch";
 import { readRepoFiles, resolveViewedFilePath, writeRepoFiles } from "./src/viewedFile";
@@ -115,11 +123,22 @@ export default function (hunk: HunkExtensionAPI) {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
+    // A fresh load has no exit-reload to reselect into; a stale returnPath here would fire on
+    // some later, unrelated reload.
+    clearSingleFileReturn();
   });
-  hunk.on("session_reload", ({ changeset }) => {
+  hunk.on("session_reload", ({ changeset }, ctx) => {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
+    // The reload that follows leaving single-file mode: reselect the file that mode was showing,
+    // scrolled to the top, instead of leaving the selection wherever it lands by default.
+    const { returnPath } = getSingleFileState();
+    if (returnPath) {
+      const file = changeset.files.find((f) => f.path === returnPath);
+      clearSingleFileReturn();
+      if (file) ctx.navigation.selectFile(file.id);
+    }
   });
   hunk.on("selection_changed", ({ fileId }) => setMirrorSelectedFileId(fileId));
   hunk.on("filter_changed", ({ filter }) => setMirrorFilter(filter));
@@ -279,7 +298,8 @@ export default function (hunk: HunkExtensionAPI) {
       ctx.commands.execute("hunk.app.refresh");
     },
     onExit(ctx) {
-      exitSingleFile();
+      const { targetPath } = getSingleFileState();
+      exitSingleFile(targetPath);
       ctx.commands.execute("hunk.app.refresh");
     },
     onKey(key: ExtensionKeyEvent, ctx) {

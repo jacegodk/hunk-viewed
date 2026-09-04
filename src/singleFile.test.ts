@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { ExtensionChangeset, ExtensionDiffFile } from "hunkdiff/extension";
 import {
   applySingleFileTransform,
+  clearSingleFileReturn,
   enterSingleFile,
   exitSingleFile,
   getSingleFileState,
@@ -22,19 +23,30 @@ beforeEach(() => resetSingleFileForTests());
 
 describe("single-file state", () => {
   test("starts inactive", () => {
-    expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null });
+    expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null, returnPath: null });
   });
   test("enter, retarget, pending, exit publish new snapshots", () => {
     let notified = 0;
     subscribeSingleFile(() => notified++);
     enterSingleFile("a.ts");
-    expect(getSingleFileState()).toEqual({ active: true, targetPath: "a.ts", pendingPath: null });
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "a.ts", pendingPath: null, returnPath: null });
     setSingleFileTarget("b.ts");
     setSingleFilePending("c.ts");
-    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: "c.ts" });
-    exitSingleFile();
-    expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null });
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: "c.ts", returnPath: null });
+    exitSingleFile("b.ts");
+    expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null, returnPath: "b.ts" });
     expect(notified).toBe(4);
+  });
+
+  test("clearSingleFileReturn nulls returnPath, and is a no-op when already null", () => {
+    let notified = 0;
+    exitSingleFile("a.ts");
+    subscribeSingleFile(() => notified++);
+    clearSingleFileReturn();
+    expect(getSingleFileState().returnPath).toBeNull();
+    expect(notified).toBe(1);
+    clearSingleFileReturn();
+    expect(notified).toBe(1);
   });
 
   test("setSingleFileTarget and setSingleFilePending are no-ops when nothing changes", () => {
@@ -56,12 +68,12 @@ describe("applySingleFileTransform", () => {
     expect(applySingleFileTransform(changeset, getSingleFileState())).toBe(changeset);
   });
   test("keeps only the target file when active", () => {
-    const out = applySingleFileTransform(changeset, { active: true, targetPath: "b.ts", pendingPath: null });
+    const out = applySingleFileTransform(changeset, { active: true, targetPath: "b.ts", pendingPath: null, returnPath: null });
     expect(out.files.map((f) => f.id)).toEqual(["2"]);
     expect(out.id).toBe("cs");
   });
   test("returns the changeset unchanged when the target is missing", () => {
-    expect(applySingleFileTransform(changeset, { active: true, targetPath: "zzz", pendingPath: null })).toBe(changeset);
+    expect(applySingleFileTransform(changeset, { active: true, targetPath: "zzz", pendingPath: null, returnPath: null })).toBe(changeset);
   });
 });
 

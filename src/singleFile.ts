@@ -8,9 +8,11 @@ export interface SingleFileState {
   targetPath: string | null;
   /** Path a pane click chose; `enter` inside the mode loads it. */
   pendingPath: string | null;
+  /** Path to reselect at the top of the view once the mode's exit reload lands. */
+  returnPath: string | null;
 }
 
-const initial: SingleFileState = { active: false, targetPath: null, pendingPath: null };
+const initial: SingleFileState = { active: false, targetPath: null, pendingPath: null, returnPath: null };
 let state: SingleFileState = initial;
 const listeners = new Set<() => void>();
 
@@ -37,12 +39,18 @@ export function useSingleFileState(): SingleFileState {
 
 /** Turn the mode on with the given target. */
 export function enterSingleFile(targetPath: string | null): void {
-  publish({ active: true, targetPath, pendingPath: null });
+  publish({ active: true, targetPath, pendingPath: null, returnPath: state.returnPath });
 }
 
-/** Turn the mode off and forget the target. */
-export function exitSingleFile(): void {
-  publish(initial);
+/** Turn the mode off, forget the target, and remember `returnPath` for the exit reload to reselect. */
+export function exitSingleFile(returnPath: string | null): void {
+  publish({ active: false, targetPath: null, pendingPath: null, returnPath });
+}
+
+/** Forget the pending return-to-file path. No-op when it is already null. */
+export function clearSingleFileReturn(): void {
+  if (state.returnPath === null) return;
+  publish({ ...state, returnPath: null });
 }
 
 /** Point the mode at another file. No-op when it is already the target and nothing is pending. */
