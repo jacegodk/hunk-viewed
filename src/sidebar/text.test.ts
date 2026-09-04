@@ -23,7 +23,17 @@ describe("fitText / padText", () => {
     expect(padText("ab", 4)).toBe("ab  ");
     expect(padText("abcdef", 4)).toBe("abc.");
   });
-  test("textWidth counts code points", () => {
+  test("textWidth counts display cells: 1 for narrow code points", () => {
     expect(textWidth("aø…")).toBe(3);
+  });
+  test("textWidth counts 2 cells for East Asian Wide/Fullwidth and emoji", () => {
+    expect(textWidth("日本")).toBe(4);
+  });
+  test("fitText truncates by display cells, not code points", () => {
+    // "日本語" is 6 cells; the "." marker takes 1, leaving a 4-cell budget that exactly fits "日本".
+    expect(fitText("日本語", 5)).toBe("日本.");
+  });
+  test("padText pads by display cells", () => {
+    expect(padText("日", 4)).toBe("日  ");
   });
 });
