@@ -6,8 +6,17 @@ import type { PatchHunk } from "./unifiedPatch";
 export const FULL_VIEW_ID = "full";
 /** Hunk's per-view row limit; a layout over it falls back to the raw diff. */
 export const FULL_VIEW_MAX_ROWS = 10_000;
-/** Below this terminal width, a split layout has no room for two usable columns. */
-const MIN_SPLIT_WIDTH = 20;
+/** Below this terminal width, a split layout has no room for two usable columns; one column reads better. */
+const MIN_SPLIT_WIDTH = 48;
+/**
+ * Hunk's layout validator caps (`src/core/review/layout.ts` in the hunk checkout): a layout with
+ * more spans or text characters than these is rejected with a user-visible warning. Single-column
+ * rows stay well under both; a split row's five spans per row (two per column plus the separator)
+ * can cross them on a very wide terminal or a very long file, so `buildSplitFileLayout` falls back
+ * to `buildSingleFileLayout` rather than risk that warning.
+ */
+const SPLIT_MAX_SPANS = 40_000;
+const SPLIT_MAX_CHARS = 1_000_000;
 
 /** How to lay the file view out: hunk's own diff-column width, when known. */
 export interface FullFileViewOptions {
@@ -175,7 +184,11 @@ function buildEntries(newDocument: string, hunks: readonly PatchHunk[]): FullFil
       nextNew += 1;
     }
     hunkEntryRanges.push({ start: startEntry, end: Math.max(startEntry, entries.length - 1) });
-    fillOld = oldLine;
+    // A pure-insertion hunk (oldCount 0) never advances the local `oldLine`: git's `oldStart` for
+    // one names the line *before* the insertion point, not a line the hunk owns, so continuing
+    // fill from `oldLine` would repeat that line's number (or print 0 for an insert at the very
+    // start of the file). Mirrors the `hunkNewStart` adjustment above for the symmetric new-side case.
+    fillOld = hunk.oldCount === 0 ? hunk.oldStart + 1 : oldLine;
     if (entries.length > FULL_VIEW_MAX_ROWS) return null;
   }
   while (nextNew <= lines.length) {
@@ -274,7 +287,8 @@ function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], 
           continue;
         }
         // A maximal removed run, followed (if present, with nothing else between) by a maximal
-        // added run: pair them index-wise, leftovers get a blank other side.
+        // added run: pair them index-wise, leftovers get a blank other side. Assumes removals
+        // precede additions within a change, which is git's own unified-diff hunk order.
         const removedStart = i;
         while (i <= range.end && entries[i]!.kind === "removed") i += 1;
         const removedRun = entries.slice(removedStart, i);
@@ -305,5 +319,11 @@ function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], 
   }
 
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
+  // Every split row carries 5 spans (gutter + content per column, plus the separator) and up to
+  // 2 * colWidth + 3 characters; over hunk's layout caps that would draw a warning instead of the
+  // view, so a file too big or a terminal too wide for two columns keeps the single-column build.
+  if (rows.length * 5 > SPLIT_MAX_SPANS || rows.length * (2 * colWidth + 3) > SPLIT_MAX_CHARS) {
+    return buildSingleFileLayout(newDocument, hunks);
+  }
   return { rows, hunkRows };
 }
