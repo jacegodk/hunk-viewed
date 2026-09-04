@@ -45,13 +45,15 @@ export function exitSingleFile(): void {
   publish(initial);
 }
 
-/** Point the mode at another file. */
+/** Point the mode at another file. No-op when it is already the target and nothing is pending. */
 export function setSingleFileTarget(path: string): void {
+  if (state.targetPath === path && state.pendingPath === null) return;
   publish({ ...state, targetPath: path, pendingPath: null });
 }
 
-/** Remember a pane click until `enter` loads it. */
+/** Remember a pane click until `enter` loads it. No-op when it is already pending. */
 export function setSingleFilePending(path: string | null): void {
+  if (state.pendingPath === path) return;
   publish({ ...state, pendingPath: path });
 }
 

@@ -36,6 +36,19 @@ describe("single-file state", () => {
     expect(getSingleFileState()).toEqual({ active: false, targetPath: null, pendingPath: null });
     expect(notified).toBe(4);
   });
+
+  test("setSingleFileTarget and setSingleFilePending are no-ops when nothing changes", () => {
+    enterSingleFile("a.ts");
+    let notified = 0;
+    subscribeSingleFile(() => notified++);
+    setSingleFileTarget("a.ts");
+    setSingleFilePending(null);
+    expect(notified).toBe(0);
+    setSingleFileTarget("b.ts");
+    expect(notified).toBe(1);
+    setSingleFilePending("c.ts");
+    expect(notified).toBe(2);
+  });
 });
 
 describe("applySingleFileTransform", () => {

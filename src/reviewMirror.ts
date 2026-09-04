@@ -6,7 +6,11 @@ import { normalizeDiffPath } from "./sidebar/entries";
 export interface ReviewMirror {
   /** Full changeset in review order, unfiltered. */
   files: readonly ExtensionDiffFile[];
-  /** Every file the changeset transform saw before single-file mode dropped any; equals `files` outside that mode. */
+  /**
+   * Every file the changeset transform saw before single-file mode dropped any, light-projected
+   * with the `changeType`/`hunks` fields from the caller's last full-render payload (the
+   * transform's own input carries neither). Not the same file objects as `files`.
+   */
   allFiles: readonly ExtensionDiffFile[];
   /** Hunk's file filter text. */
   filter: string;
@@ -43,7 +47,12 @@ export function setMirrorFiles(files: readonly ExtensionDiffFile[]): void {
   publish({ files });
 }
 
-/** Record the untransformed changeset from inside the changeset transform. */
+/**
+ * Record the untransformed changeset from inside the changeset transform.
+ *
+ * `files` is expected to already be light-projected with `changeType`/`hunks` merged in from the
+ * caller's last full-render payload; this function just publishes it. Does not equal `files`.
+ */
 export function setMirrorAllFiles(files: readonly ExtensionDiffFile[]): void {
   publish({ allFiles: files });
 }
