@@ -132,7 +132,11 @@ export default function (hunk: HunkExtensionAPI) {
     if (returnPath) {
       const file = changeset.files.find((f) => f.path === returnPath);
       clearSingleFileReturn();
-      if (file) ctx.navigation.selectFile(file.id);
+      // Deferred: hunk's React effects for the new changeset have not all flushed when this
+      // handler runs, so selecting synchronously can miss the file silently. `ctx.navigation` is
+      // a live guard, safe to call after the handler returns; `selectFile` aligns the file's
+      // header to the top even when it is already selected.
+      if (file) setTimeout(() => ctx.navigation.selectFile(file.id), 0);
     }
   });
   hunk.on("selection_changed", ({ fileId }) => setMirrorSelectedFileId(fileId));

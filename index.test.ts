@@ -442,7 +442,7 @@ describe("single-file mode", () => {
     expect(getSingleFileState().returnPath).toBeNull();
   });
 
-  test("leaving the mode reselects the file it was showing, once the exit reload's changeset_loaded and session_reload both land", () => {
+  test("leaving the mode reselects the file it was showing, once the exit reload's changeset_loaded and session_reload both land", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -459,8 +459,14 @@ describe("single-file mode", () => {
     fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, ctx);
     fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, ctx);
 
-    expect(selectedIds).toEqual(["2"]);
+    // The selection is deferred past hunk's React effects for the new changeset, so it must not
+    // have happened yet synchronously within the handler.
+    expect(selectedIds).toEqual([]);
     expect(getSingleFileState().returnPath).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(selectedIds).toEqual(["2"]);
   });
 
   test("o notifies when the current input cannot be reloaded, and does not enter the mode", () => {
