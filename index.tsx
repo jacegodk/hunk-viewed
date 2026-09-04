@@ -179,7 +179,7 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.registerFileView({
     id: FULL_VIEW_ID,
     title: "Full file",
-    matches: (file) => !file.isBinary,
+    matches: (file) => !file.isBinary && !file.isTooLarge && (file.hunks?.length ?? 0) > 0 && file.changeType !== "deleted",
     async layout(input) {
       if (input.file.statsTruncated) return null;
       const hunks = parseUnifiedPatch(input.file.patch);

@@ -40,6 +40,8 @@ Rebind in `~/.config/hunk/config.toml`:
 "hunk-viewed.singleFile" = "o"
 ```
 
+`nextUnviewed`/`previousUnviewed` kept their command ids from round 1; they now move next/previous file (unviewed only inside single-file mode), not next/previous unviewed file everywhere.
+
 ## How marks work
 
 - A mark is stored per repo (the canonical working directory hunk runs in) and per file path,
@@ -63,6 +65,8 @@ Rebind in `~/.config/hunk/config.toml`:
 - Single-file mode needs a reloadable input (not a piped patch).
 - The full-file view needs a readable source (not a piped patch) and falls back to the normal
   diff over 10,000 rows or when the file changed since the diff was taken.
+- The full-file view has no syntax highlighting (the extension API only exposes semantic tones).
+- The full-file view does not follow you across single-file mode switches; press F again.
 - Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
 
 ## Development

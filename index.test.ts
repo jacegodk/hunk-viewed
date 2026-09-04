@@ -575,6 +575,10 @@ describe("full file view", () => {
     };
     expect(view.matches(file)).toBe(true);
     expect(view.matches({ ...file, isBinary: true })).toBe(false);
+    expect(view.matches({ ...file, isTooLarge: true })).toBe(false);
+    expect(view.matches({ ...file, changeType: "deleted" })).toBe(false);
+    expect(view.matches({ ...file, hunks: [] })).toBe(false);
+    expect(view.matches(makeFile("2", "b.ts"))).toBe(false);
     const layout = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
     expect(layout?.rows.length).toBe(2);
     const missing = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => null });
