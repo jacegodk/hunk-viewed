@@ -7,7 +7,6 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { ExtensionPaneProps } from "hunkdiff/extension";
-import { useReviewMirror } from "../reviewMirror";
 import { isViewed, useViewedState } from "../viewedStore";
 import { buildFlatSidebarEntries, buildTreeSidebarEntries, resolveFileSidebarMode, sidebarEntryStatsWidth } from "./entries";
 import { DirectoryRow, FileRow, GroupHeader, fileRowId } from "./rows";
@@ -17,7 +16,6 @@ import { padText } from "./text";
 export function FilesPane({ files, selectedFileId, theme, width, actions }: ExtensionPaneProps): ReactNode {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const viewed = useViewedState();
-  const { filesModeActive } = useReviewMirror();
   // One column of selection stripe plus one of row padding, as in the bundled pane.
   const textWidth = Math.max(8, width - 2);
   const mode = resolveFileSidebarMode(textWidth);
@@ -48,7 +46,7 @@ export function FilesPane({ files, selectedFileId, theme, width, actions }: Exte
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: theme.panel }}>
       <box style={{ width: "100%", height: 1, backgroundColor: theme.panel }}>
-        <text fg={filesModeActive ? theme.accent : theme.muted}>{title}</text>
+        <text fg={theme.muted}>{title}</text>
       </box>
       <scrollbox
         ref={scrollRef}

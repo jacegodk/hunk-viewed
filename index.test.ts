@@ -16,9 +16,7 @@ import type {
   ExtensionEventContext,
   ExtensionEventHandler,
   ExtensionEventName,
-  ExtensionKeyEvent,
   ExtensionKeyboardMode,
-  ExtensionKeyboardModeContext,
   HunkExtensionAPI,
 } from "hunkdiff/extension";
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
@@ -123,10 +121,9 @@ describe("registration", () => {
     expect(fake.commands.get("toggleViewed")?.command.key).toBe("v");
     expect(fake.commands.get("nextUnviewed")?.command.key).toBe("J");
     expect(fake.commands.get("previousUnviewed")?.command.key).toBe("K");
-    expect(fake.commands.get("filesMode")?.command.key).toBe("F");
     expect(fake.commands.get("clearRepo")?.command.key).toBeUndefined();
 
-    expect(fake.keyboardModes.has("files")).toBe(true);
+    expect(fake.keyboardModes.size).toBe(0);
   });
 });
 
@@ -207,31 +204,6 @@ describe("nextUnviewed / previousUnviewed", () => {
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected));
 
     expect(selected).toEqual(["2"]);
-  });
-});
-
-describe("files keyboard mode", () => {
-  test("delegates j/k/enter and passes through J/K/v", () => {
-    const fake = createFakeHunk();
-    registerExtension(fake.hunk);
-    const mode = fake.keyboardModes.get("files")!;
-
-    const executed: string[] = [];
-    const ctx = {
-      commands: { execute: (id: string) => (executed.push(id), true), isEnabled: () => true },
-      notify: () => {},
-    } as unknown as ExtensionKeyboardModeContext;
-
-    expect(mode.onKey({ name: "j" } as ExtensionKeyEvent, ctx)).toBe("handled");
-    expect(mode.onKey({ name: "up" } as ExtensionKeyEvent, ctx)).toBe("handled");
-    expect(executed).toEqual(["hunk.review.nextFile", "hunk.review.previousFile"]);
-
-    expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, ctx)).toBe("exit");
-
-    executed.length = 0;
-    expect(mode.onKey({ name: "J", shift: true } as ExtensionKeyEvent, ctx)).toBe("pass");
-    expect(mode.onKey({ name: "v" } as ExtensionKeyEvent, ctx)).toBe("pass");
-    expect(executed).toEqual([]);
   });
 });
 

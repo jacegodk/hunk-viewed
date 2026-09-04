@@ -9,11 +9,9 @@ export interface ReviewMirror {
   /** Hunk's file filter text. */
   filter: string;
   selectedFileId: string | null;
-  /** True while the extension's files keyboard mode owns keys. */
-  filesModeActive: boolean;
 }
 
-const initial: ReviewMirror = { files: [], filter: "", selectedFileId: null, filesModeActive: false };
+const initial: ReviewMirror = { files: [], filter: "", selectedFileId: null };
 let mirror: ReviewMirror = initial;
 const listeners = new Set<() => void>();
 
@@ -51,11 +49,6 @@ export function setMirrorFilter(filter: string): void {
 /** Record the selection after `selection_changed`. */
 export function setMirrorSelectedFileId(fileId: string | null): void {
   publish({ selectedFileId: fileId });
-}
-
-/** Record whether the files keyboard mode is active. */
-export function setMirrorFilesModeActive(active: boolean): void {
-  publish({ filesModeActive: active });
 }
 
 /** The file facts hunk's filter reads (`src/core/review/selectors.ts`). */

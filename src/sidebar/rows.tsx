@@ -119,7 +119,7 @@ export const FileRow = memo(function FileRow({
     >
       <box style={{ width: 1, height: 1, backgroundColor: selected ? theme.accent : rowBackground }} />
       <box style={{ flexGrow: 1, height: 1, paddingLeft: paddingLeft + indent, flexDirection: "row", backgroundColor: rowBackground }}>
-        <text fg={theme.accentMuted}>{viewed ? "✓ " : "  "}</text>
+        <text fg={theme.badgeAdded}>{viewed ? "✓ " : "  "}</text>
         <text fg={viewed ? theme.muted : color}>{icon} </text>
         <text fg={textColor}>{padText(fitText(entry.name, nameWidth, "…"), nameWidth)}</text>
         {statsSectionWidth > 0 && (

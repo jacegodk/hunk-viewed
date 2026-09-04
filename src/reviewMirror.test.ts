@@ -41,7 +41,7 @@ describe("fileMatchesFilter", () => {
 
 describe("reviewMirror", () => {
   test("starts empty", () => {
-    expect(getReviewMirror()).toEqual({ files: [], filter: "", selectedFileId: null, filesModeActive: false });
+    expect(getReviewMirror()).toEqual({ files: [], filter: "", selectedFileId: null });
   });
 
   test("visibleFiles applies the filter in review order", () => {
