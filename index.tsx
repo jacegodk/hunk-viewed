@@ -10,7 +10,7 @@
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import type { ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
+import type { ExtensionCommandContext, ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
 import { matchesKey } from "hunkdiff/extension";
 import { FOLDED_VIEW_ID, buildFoldedLayout } from "./src/foldedView";
 import { findUnviewedNeighbor } from "./src/navigation";
@@ -29,6 +29,15 @@ import { clearRepo, getViewedState, isViewed, loadRepo, reconcileViewed, setPers
 
 const FILES_PANE_ID = "files";
 const SINGLE_MODE_ID = "single";
+
+/** Poll `check` every 16 ms until it passes or `tries` runs out; returns whether it passed. */
+async function waitFor(check: () => boolean, tries = 20): Promise<boolean> {
+  for (let i = 0; i < tries; i += 1) {
+    if (check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+  return false;
+}
 
 /** Register the hunk-viewed pane, commands, keyboard mode, and event handlers. */
 export default function (hunk: HunkExtensionAPI) {
@@ -85,28 +94,64 @@ export default function (hunk: HunkExtensionAPI) {
     return visible;
   }
 
+  // The changeset transform only ever sees hunk's internal, unprojected files (no `changeType`
+  // or `hunks`); those fields are filled in later, on the read-only payload the lifecycle events
+  // carry. Cache that payload by path here so the transform can merge the fields back in when it
+  // records `allFiles`. Left alone while single-file mode is active, since a mode-driven reload
+  // only ever renders the one target file and would otherwise erase every other file's fields.
+  let projectedByPath = new Map<string, ExtensionDiffFile>();
+  function refreshProjectedFiles(files: readonly ExtensionDiffFile[]) {
+    if (getSingleFileState().active) return;
+    projectedByPath = new Map(files.map((file) => [file.path, file]));
+  }
+
   hunk.on("startup", ({ cwd }, ctx) => ensureRepoLoaded(cwd, ctx.notify));
   hunk.on("changeset_loaded", ({ changeset }, ctx) => {
     ensureRepoLoaded(ctx.cwd, ctx.notify);
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
+    refreshProjectedFiles(changeset.files);
   });
   hunk.on("session_reload", ({ changeset }) => {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
+    refreshProjectedFiles(changeset.files);
   });
   hunk.on("selection_changed", ({ fileId }) => setMirrorSelectedFileId(fileId));
   hunk.on("filter_changed", ({ filter }) => setMirrorFilter(filter));
 
   hunk.transformChangeset((changeset) => {
-    setMirrorAllFiles(changeset.files);
+    setMirrorAllFiles(
+      changeset.files.map((file) => {
+        const projected = projectedByPath.get(file.path);
+        return {
+          id: file.id,
+          path: file.path,
+          previousPath: file.previousPath,
+          patch: file.patch,
+          stats: file.stats,
+          statsTruncated: file.statsTruncated,
+          isUntracked: file.isUntracked,
+          isBinary: file.isBinary,
+          agent: file.agent ?? null,
+          metadata: {},
+          changeType: projected?.changeType,
+          hunks: projected?.hunks,
+        } satisfies ExtensionDiffFile;
+      }),
+    );
     return applySingleFileTransform(changeset, getSingleFileState());
   });
 
-  /** Point single-file mode at `path` and reload so the transform applies. */
-  function retarget(path: string, execute: (commandId: string) => boolean) {
+  /**
+   * Point single-file mode at `path` and reload so the transform applies. Warns instead of
+   * silently doing nothing when the current input cannot be reloaded (e.g. a piped patch).
+   */
+  function retarget(path: string, execute: (commandId: string) => boolean, notify: ExtensionContext["notify"]) {
     setSingleFileTarget(path);
-    execute("hunk.app.refresh");
+    if (!execute("hunk.app.refresh")) {
+      notify("This input cannot be reloaded, so single-file mode is unavailable", "warning");
+    }
   }
 
   hunk.registerPane({
@@ -122,7 +167,9 @@ export default function (hunk: HunkExtensionAPI) {
     id: FOLDED_VIEW_ID,
     title: "Viewed",
     matches: (file) => isViewed(getViewedState(), file),
-    layout: ({ file }) => buildFoldedLayout(file),
+    // `matches` gates which files can select this view, but hunk can still ask `layout` to
+    // re-derive a stale presentation (e.g. after a refresh cleared the mark); decline it there too.
+    layout: ({ file }) => (isViewed(getViewedState(), file) ? buildFoldedLayout(file) : null),
   });
 
   hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "v" }, (ctx) => {
@@ -136,10 +183,12 @@ export default function (hunk: HunkExtensionAPI) {
       ctx.fileViews.select(null);
       return;
     }
-    ctx.fileViews.select(FOLDED_VIEW_ID);
-    if (getSingleFileState().active) {
+    const single = getSingleFileState();
+    // Retargeting drops the file from single-file mode's changeset anyway, so folding it is moot.
+    if (!single.active) ctx.fileViews.select(FOLDED_VIEW_ID);
+    if (single.active) {
       const next = findUnviewedNeighbor(getReviewMirror().allFiles, file.id, 1, isViewedFile);
-      if (next) retarget(next.path, (id) => ctx.commands.execute(id));
+      if (next) retarget(next.path, (id) => ctx.commands.execute(id), ctx.notify);
       else ctx.notify("No unviewed file after this one", "info");
       return;
     }
@@ -148,37 +197,33 @@ export default function (hunk: HunkExtensionAPI) {
     else ctx.notify("No unviewed file after this one", "info");
   });
 
-  hunk.registerCommand({ id: "nextUnviewed", title: "Next unviewed file", key: "J" }, (ctx) => {
-    if (getSingleFileState().active) {
-      const { targetPath } = getSingleFileState();
+  /**
+   * Move the selection (or, in single-file mode, the target) to the next/previous unviewed file.
+   * Shared by `nextUnviewed` and `previousUnviewed`, which only differ in direction and message.
+   */
+  function jumpUnviewed(ctx: ExtensionCommandContext, direction: 1 | -1, message: string) {
+    const single = getSingleFileState();
+    if (single.active) {
       const files = getReviewMirror().allFiles;
-      const currentId = files.find((file) => file.path === targetPath)?.id ?? null;
-      const next = findUnviewedNeighbor(files, currentId, 1, isViewedFile);
-      if (next) retarget(next.path, (id) => ctx.commands.execute(id));
-      else ctx.notify("No unviewed file after this one", "info");
+      const currentId = files.find((file) => file.path === single.targetPath)?.id ?? null;
+      const next = findUnviewedNeighbor(files, currentId, direction, isViewedFile);
+      if (next) retarget(next.path, (id) => ctx.commands.execute(id), ctx.notify);
+      else ctx.notify(message, "info");
       return;
     }
     const selectedFileId = ctx.selection.file?.id ?? null;
-    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, 1, isViewedFile);
+    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, direction, isViewedFile);
     if (next) ctx.navigation.selectFile(next.id);
-    else ctx.notify("No unviewed file after this one", "info");
-  });
+    else ctx.notify(message, "info");
+  }
 
-  hunk.registerCommand({ id: "previousUnviewed", title: "Previous unviewed file", key: "K" }, (ctx) => {
-    if (getSingleFileState().active) {
-      const { targetPath } = getSingleFileState();
-      const files = getReviewMirror().allFiles;
-      const currentId = files.find((file) => file.path === targetPath)?.id ?? null;
-      const previous = findUnviewedNeighbor(files, currentId, -1, isViewedFile);
-      if (previous) retarget(previous.path, (id) => ctx.commands.execute(id));
-      else ctx.notify("No unviewed file before this one", "info");
-      return;
-    }
-    const selectedFileId = ctx.selection.file?.id ?? null;
-    const previous = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, -1, isViewedFile);
-    if (previous) ctx.navigation.selectFile(previous.id);
-    else ctx.notify("No unviewed file before this one", "info");
-  });
+  hunk.registerCommand({ id: "nextUnviewed", title: "Next unviewed file", key: "J" }, (ctx) =>
+    jumpUnviewed(ctx, 1, "No unviewed file after this one"),
+  );
+
+  hunk.registerCommand({ id: "previousUnviewed", title: "Previous unviewed file", key: "K" }, (ctx) =>
+    jumpUnviewed(ctx, -1, "No unviewed file before this one"),
+  );
 
   hunk.registerCommand({ id: "clearRepo", title: "Clear viewed marks for this repo" }, async (ctx) => {
     const count = Object.keys(getViewedState().files).length;
@@ -187,33 +232,38 @@ export default function (hunk: HunkExtensionAPI) {
       body: `Remove ${count} viewed mark${count === 1 ? "" : "s"} for this repo?`,
       confirmLabel: "Clear",
     });
-    if (confirmed) clearRepo();
+    if (!confirmed) return;
+    clearRepo();
+    // Every row still presenting the folded view now fails `matches`; ask hunk to redraw them
+    // raw instead of leaving a stale "✓ viewed" row on screen.
+    ctx.fileViews.refresh(FOLDED_VIEW_ID);
   });
 
-  hunk.registerCommand({ id: "foldViewed", title: "Fold viewed files" }, (ctx) => {
-    const state = getViewedState();
-    const viewedVisible = visibleFiles(getReviewMirror()).filter((file) => isViewed(state, file));
-    if (viewedVisible.length === 0) {
-      ctx.notify("No viewed files to fold", "info");
+  hunk.registerCommand({ id: "foldViewed", title: "Fold viewed files" }, async (ctx) => {
+    if (getSingleFileState().active) {
+      ctx.notify("Leave single-file mode to fold all files", "info");
       return;
     }
-    const selected = ctx.selection.file;
-    // The bulk command only runs when the selected file already presents the view, so anchor
-    // on a viewed file first and come back afterwards.
-    const anchor = selected && isViewed(state, selected) ? selected : viewedVisible[0]!;
-    if (anchor.id !== selected?.id) ctx.navigation.selectFile(anchor.id);
+    const file = ctx.selection.file;
+    if (!file || !isViewed(getViewedState(), file)) {
+      ctx.notify("Select a viewed file, then fold", "info");
+      return;
+    }
+    // The bulk command only applies to files presenting the view, so select it on the already-
+    // viewed selection first, then wait for the render that follows to catch up before running it.
     ctx.fileViews.select(FOLDED_VIEW_ID);
-    ctx.commands.execute("hunk.view.applyFilePresentationToAllMatching");
-    if (selected && anchor.id !== selected.id) ctx.navigation.selectFile(selected.id);
+    const ready = await waitFor(() => ctx.commands.isEnabled("hunk.view.applyFilePresentationToAllMatching"));
+    if (!ready || !ctx.commands.execute("hunk.view.applyFilePresentationToAllMatching")) {
+      ctx.notify("Could not fold every viewed file", "warning");
+    }
   });
 
   hunk.registerKeyboardMode({
     id: SINGLE_MODE_ID,
     title: "Single file",
+    // The target is seeded by the `singleFile` command before entry (selection can be debounced
+    // by the time onEnter runs), so entry only needs to reload with that target in effect.
     onEnter(ctx) {
-      const mirror = getReviewMirror();
-      const selected = mirror.files.find((file) => file.id === mirror.selectedFileId) ?? mirror.files[0];
-      enterSingleFile(selected?.path ?? null);
       ctx.commands.execute("hunk.app.refresh");
     },
     onExit(ctx) {
@@ -224,12 +274,15 @@ export default function (hunk: HunkExtensionAPI) {
       const { targetPath, pendingPath } = getSingleFileState();
       const files = getReviewMirror().allFiles;
       if (matchesKey(".", key) || matchesKey(",", key)) {
-        const next = neighborPath(files, targetPath, matchesKey(".", key) ? 1 : -1);
-        if (next) retarget(next, (id) => ctx.commands.execute(id));
+        const direction = matchesKey(".", key) ? 1 : -1;
+        const next = neighborPath(files, targetPath, direction);
+        if (next) retarget(next, (id) => ctx.commands.execute(id), ctx.notify);
+        else ctx.notify(direction === 1 ? "No file after this one" : "No file before this one", "info");
         return "handled";
       }
       if (matchesKey("enter", key)) {
-        if (pendingPath) retarget(pendingPath, (id) => ctx.commands.execute(id));
+        if (!pendingPath) return "pass";
+        retarget(pendingPath, (id) => ctx.commands.execute(id), ctx.notify);
         return "handled";
       }
       return "pass";
@@ -237,8 +290,15 @@ export default function (hunk: HunkExtensionAPI) {
   });
 
   hunk.registerCommand({ id: "singleFile", title: "Single-file mode (o toggles, Esc exits)", key: "o" }, (ctx) => {
-    if (ctx.keyboardModes.isActive(SINGLE_MODE_ID)) ctx.keyboardModes.exitMode();
-    else ctx.keyboardModes.enterMode(SINGLE_MODE_ID);
+    if (ctx.keyboardModes.isActive(SINGLE_MODE_ID)) {
+      ctx.keyboardModes.exitMode();
+      return;
+    }
+    if (!ctx.commands.isEnabled("hunk.app.refresh")) {
+      ctx.notify("Single-file mode needs a reloadable input", "info");
+      return;
+    }
+    enterSingleFile(ctx.selection.file?.path ?? getReviewMirror().files[0]?.path ?? null);
+    ctx.keyboardModes.enterMode(SINGLE_MODE_ID);
   });
-
 }

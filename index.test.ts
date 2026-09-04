@@ -81,16 +81,30 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
   } as unknown as ExtensionEventContext;
 }
 
-/** Calls a command handler made against `ctx.fileViews.select`, `ctx.commands.execute`, and `ctx.keyboardModes`. */
+/** Calls a command handler made against `ctx.fileViews`, `ctx.commands`, and `ctx.keyboardModes`. */
 interface CommandCalls {
   fileViewSelects: Array<string | null>;
+  fileViewRefreshes: string[];
   executed: string[];
   modeActive: boolean;
+  /**
+   * Queue of `commands.isEnabled` results: each call consumes the front entry until one is left,
+   * which then repeats forever. Defaults to always-enabled.
+   */
+  isEnabledResults: boolean[];
+  /** Value `commands.execute` returns; defaults to true (the command ran). */
+  executeResult: boolean;
 }
 
 /** Build an empty `CommandCalls` recorder for a `commandContext`. */
 function createCalls(): CommandCalls {
-  return { fileViewSelects: [], executed: [], modeActive: false };
+  return { fileViewSelects: [], fileViewRefreshes: [], executed: [], modeActive: false, isEnabledResults: [true], executeResult: true };
+}
+
+/** Consume one queued `isEnabled` result, repeating the last entry once the queue is down to one. */
+function nextIsEnabled(calls: CommandCalls): boolean {
+  if (calls.isEnabledResults.length > 1) return calls.isEnabledResults.shift()!;
+  return (calls.isEnabledResults[0] ??= true);
 }
 
 function commandContext(
@@ -103,11 +117,15 @@ function commandContext(
     selection: { file: selectedFile, hunkIndex: null, currentLine: null },
     navigation: { selectFile: (id: string) => selectedIds.push(id) },
     notify: (message: string, type?: string) => notified.push([message, type]),
-    fileViews: { select: (id: string | null) => calls.fileViewSelects.push(id) },
+    fileViews: {
+      select: (id: string | null) => calls.fileViewSelects.push(id),
+      refresh: (id: string) => calls.fileViewRefreshes.push(id),
+    },
     commands: {
+      isEnabled: () => nextIsEnabled(calls),
       execute: (id: string) => {
         calls.executed.push(id);
-        return true;
+        return calls.executeResult;
       },
     },
     keyboardModes: {
@@ -124,15 +142,17 @@ function commandContext(
   } as unknown as ExtensionCommandContext;
 }
 
-/** Build a keyboard-mode context whose `commands.execute` records into `calls`. */
-function modeContext(calls: CommandCalls): ExtensionKeyboardModeContext {
+/** Build a keyboard-mode context whose `commands` and `notify` record into `calls`/`notified`. */
+function modeContext(calls: CommandCalls, notified: Array<[string, string | undefined]> = []): ExtensionKeyboardModeContext {
   return {
     commands: {
+      isEnabled: () => nextIsEnabled(calls),
       execute: (id: string) => {
         calls.executed.push(id);
-        return true;
+        return calls.executeResult;
       },
     },
+    notify: (message: string, type?: string) => notified.push([message, type]),
   } as unknown as ExtensionKeyboardModeContext;
 }
 
@@ -264,7 +284,7 @@ describe("nextUnviewed / previousUnviewed", () => {
 });
 
 describe("clearRepo", () => {
-  test("clears marks only when the user confirms", async () => {
+  test("clears marks only when the user confirms, and refreshes the folded view", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts")];
@@ -272,14 +292,17 @@ describe("clearRepo", () => {
     storeToggleViewed(files[0]!, new Date());
 
     let confirmed = false;
-    const ctx = { dialogs: { confirm: async () => confirmed } } as unknown as ExtensionCommandContext;
+    const calls = createCalls();
+    const ctx = { ...commandContext(null, [], [], calls), dialogs: { confirm: async () => confirmed } } as unknown as ExtensionCommandContext;
 
     await fake.commands.get("clearRepo")!.handler(ctx);
     expect(Object.keys(getViewedState().files)).toEqual(["a.ts"]);
+    expect(calls.fileViewRefreshes).toEqual([]);
 
     confirmed = true;
     await fake.commands.get("clearRepo")!.handler(ctx);
     expect(Object.keys(getViewedState().files)).toEqual([]);
+    expect(calls.fileViewRefreshes).toEqual(["viewed"]);
   });
 });
 
@@ -297,6 +320,15 @@ describe("folded file view", () => {
     expect(view.layout({ file: files[0]! }).rows.length).toBe(1);
   });
 
+  test("layout declines a file that is not viewed", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const view = fake.fileViews[0] as { layout: (input: { file: ExtensionDiffFile }) => unknown };
+    expect(view.layout({ file: files[0]! })).toBeNull();
+  });
+
   test("toggleViewed selects the folded view when marking and raw when clearing", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
@@ -310,32 +342,64 @@ describe("folded file view", () => {
     expect(calls.fileViewSelects).toEqual(["viewed", null]);
   });
 
-  test("foldViewed anchors on a viewed file, applies to all matching, and restores the selection", () => {
+  test("foldViewed notifies when the selected file is not viewed", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
-    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    const files = [makeFile("1", "a.ts")];
     loadChangeset(fake, files);
-    storeToggleViewed(files[1]!, new Date());
     const calls = createCalls();
-    const selected: string[] = [];
-    fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, selected, [], calls));
-    expect(selected).toEqual(["2", "1"]);
-    expect(calls.fileViewSelects).toEqual(["viewed"]);
-    expect(calls.executed).toEqual(["hunk.view.applyFilePresentationToAllMatching"]);
+    const notified: Array<[string, string | undefined]> = [];
+    await fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, [], notified, calls));
+    expect(notified).toEqual([["Select a viewed file, then fold", "info"]]);
+    expect(calls.executed).toEqual([]);
   });
 
-  test("foldViewed notifies when nothing is viewed", () => {
+  test("foldViewed notifies when single-file mode is active", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
-    loadChangeset(fake, [makeFile("1", "a.ts")]);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[0]!, new Date());
+    enterSingleFile("a.ts");
+    const calls = createCalls();
     const notified: Array<[string, string | undefined]> = [];
-    fake.commands.get("foldViewed")!.handler(commandContext(null, [], notified));
-    expect(notified[0]?.[0]).toBe("No viewed files to fold");
+    await fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, [], notified, calls));
+    expect(notified).toEqual([["Leave single-file mode to fold all files", "info"]]);
+    expect(calls.executed).toEqual([]);
+  });
+
+  test("foldViewed waits for the bulk command to become enabled, then runs it once", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[0]!, new Date());
+    const calls = createCalls();
+    calls.isEnabledResults = [false, false, true];
+    const notified: Array<[string, string | undefined]> = [];
+    await fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, [], notified, calls));
+    expect(calls.fileViewSelects).toEqual(["viewed"]);
+    expect(calls.executed).toEqual(["hunk.view.applyFilePresentationToAllMatching"]);
+    expect(notified).toEqual([]);
+  });
+
+  test("foldViewed warns when the bulk command never becomes enabled", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[0]!, new Date());
+    const calls = createCalls();
+    calls.isEnabledResults = [false];
+    const notified: Array<[string, string | undefined]> = [];
+    await fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, [], notified, calls));
+    expect(calls.executed).toEqual([]);
+    expect(notified).toEqual([["Could not fold every viewed file", "warning"]]);
   });
 });
 
 describe("single-file mode", () => {
-  test("o toggles the mode; enter sets the target and refreshes; exit restores", () => {
+  test("o seeds the target and enters the mode; onEnter refreshes; exit restores", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -344,16 +408,32 @@ describe("single-file mode", () => {
     const calls = createCalls();
     const single = fake.commands.get("singleFile")!.handler;
     single(commandContext(files[1]!, [], [], calls));
+    // The command itself seeds the target from the (possibly debounced) selection at invocation
+    // time, so it is already set before the mode's onEnter ever runs.
     expect(calls.modeActive).toBe(true);
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: null });
     const mode = fake.keyboardModes.get("single")!;
     mode.onEnter!(modeContext(calls));
-    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: null });
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
     single(commandContext(files[1]!, [], [], calls));
     expect(calls.modeActive).toBe(false);
     mode.onExit!(modeContext(calls));
     expect(getSingleFileState().active).toBe(false);
     expect(calls.executed).toEqual(["hunk.app.refresh", "hunk.app.refresh"]);
+  });
+
+  test("o notifies when the current input cannot be reloaded, and does not enter the mode", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    calls.isEnabledResults = [false];
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("singleFile")!.handler(commandContext(files[0]!, [], notified, calls));
+    expect(notified).toEqual([["Single-file mode needs a reloadable input", "info"]]);
+    expect(calls.modeActive).toBe(false);
+    expect(getSingleFileState().active).toBe(false);
   });
 
   test("the transform records allFiles and keeps only the target while active", () => {
@@ -365,6 +445,19 @@ describe("single-file mode", () => {
     expect(getReviewMirror().allFiles.length).toBe(2);
     enterSingleFile("b.ts");
     expect(transform(makeChangeset(files)).files.map((f) => f.id)).toEqual(["2"]);
+  });
+
+  test("the transform light-projects allFiles from the last full-render payload", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    // changeset_loaded carries the projected file (changeType/hunks filled in).
+    const projected = [makeFile("1", "a.ts", { changeType: "new", hunks: [{ index: 0, header: "@@" }] as never })];
+    loadChangeset(fake, projected);
+    // The transform's own input is hunk's internal changeset, which never carries those fields.
+    const internal = [makeFile("1", "a.ts", { metadata: { internal: true } })];
+    fake.transforms[0]!(makeChangeset(internal));
+    expect(getReviewMirror().allFiles[0]?.changeType).toBe("new");
+    expect(getReviewMirror().allFiles[0]?.metadata).toEqual({});
   });
 
   test(", and . retarget with a refresh; enter loads the pending file; other keys pass", () => {
@@ -386,6 +479,39 @@ describe("single-file mode", () => {
     expect(calls.executed.filter((id) => id === "hunk.app.refresh").length).toBe(3);
   });
 
+  test("enter passes through with nothing pending; , and . notify at the ends", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    const mode = fake.keyboardModes.get("single")!;
+    let notified: Array<[string, string | undefined]> = [];
+    expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("pass");
+    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(notified).toEqual([["No file before this one", "info"]]);
+    enterSingleFile("b.ts");
+    notified = [];
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(notified).toEqual([["No file after this one", "info"]]);
+  });
+
+  test("retarget warns when the reload fails", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    calls.executeResult = false;
+    const notified: Array<[string, string | undefined]> = [];
+    const mode = fake.keyboardModes.get("single")!;
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
+    expect(notified).toEqual([["This input cannot be reloaded, so single-file mode is unavailable", "warning"]]);
+  });
+
   test("J and K retarget over all files while the mode is active", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
@@ -399,6 +525,38 @@ describe("single-file mode", () => {
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected, [], calls));
     expect(selected).toEqual([]);
     expect(getSingleFileState().targetPath).toBe("c.ts");
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
+  });
+
+  test("K retargets backward over allFiles and refreshes", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    loadChangeset(fake, [files[2]!]);
+    enterSingleFile("c.ts");
+    storeToggleViewed(files[1]!, new Date());
+    const calls = createCalls();
+    const selected: string[] = [];
+    fake.commands.get("previousUnviewed")!.handler(commandContext(files[2]!, selected, [], calls));
+    expect(selected).toEqual([]);
+    expect(getSingleFileState().targetPath).toBe("a.ts");
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
+  });
+
+  test("toggleViewed marks without folding, and retargets to the next unviewed file", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    loadChangeset(fake, [files[0]!]);
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(files[0]!, [], [], calls));
+    expect(isViewed(getViewedState(), files[0]!)).toBe(true);
+    // The file leaves single-file mode's changeset on retarget anyway, so folding it is moot.
+    expect(calls.fileViewSelects).toEqual([]);
+    expect(getSingleFileState().targetPath).toBe("b.ts");
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 });
