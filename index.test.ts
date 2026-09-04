@@ -85,6 +85,7 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
 interface CommandCalls {
   fileViewSelects: Array<string | null>;
   fileViewRefreshes: string[];
+  fileViewToggles: string[];
   executed: string[];
   modeActive: boolean;
   /**
@@ -98,7 +99,7 @@ interface CommandCalls {
 
 /** Build an empty `CommandCalls` recorder for a `commandContext`. */
 function createCalls(): CommandCalls {
-  return { fileViewSelects: [], fileViewRefreshes: [], executed: [], modeActive: false, isEnabledResults: [true], executeResult: true };
+  return { fileViewSelects: [], fileViewRefreshes: [], fileViewToggles: [], executed: [], modeActive: false, isEnabledResults: [true], executeResult: true };
 }
 
 /** Consume one queued `isEnabled` result, repeating the last entry once the queue is down to one. */
@@ -120,6 +121,7 @@ function commandContext(
     fileViews: {
       select: (id: string | null) => calls.fileViewSelects.push(id),
       refresh: (id: string) => calls.fileViewRefreshes.push(id),
+      toggle: (id: string) => calls.fileViewToggles.push(id),
     },
     commands: {
       isEnabled: () => nextIsEnabled(calls),
@@ -238,7 +240,7 @@ describe("toggleViewed", () => {
 });
 
 describe("nextUnviewed / previousUnviewed", () => {
-  test("nextUnviewed notifies when nothing is left after the selection", () => {
+  test("nextUnviewed moves to the very next file without skipping viewed ones", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -250,11 +252,11 @@ describe("nextUnviewed / previousUnviewed", () => {
     const notified: Array<[string, string | undefined]> = [];
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected, notified));
 
-    expect(notified).toEqual([["No unviewed file after this one", "info"]]);
-    expect(selected).toEqual([]);
+    expect(selected).toEqual(["2"]);
+    expect(notified).toEqual([]);
   });
 
-  test("previousUnviewed selects the last unviewed file when nothing is selected", () => {
+  test("previousUnviewed selects the last file when nothing is selected", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -265,7 +267,7 @@ describe("nextUnviewed / previousUnviewed", () => {
     const selected: string[] = [];
     fake.commands.get("previousUnviewed")!.handler(commandContext(null, selected));
 
-    expect(selected).toEqual(["1"]);
+    expect(selected).toEqual(["3"]);
   });
 
   test("falls back to the full file list when the selection is outside the mirrored filter", () => {
@@ -558,5 +560,71 @@ describe("single-file mode", () => {
     expect(calls.fileViewSelects).toEqual([]);
     expect(getSingleFileState().targetPath).toBe("b.ts");
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
+  });
+});
+
+describe("full file view", () => {
+  test("registers the full view for non-binary files and F toggles it", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const file = makeFile("1", "a.ts", { patch: "@@ -1 +1 @@\n-a\n+b\n", hunks: [{ index: 0, header: "@@" }] as never });
+    loadChangeset(fake, [file]);
+    const view = fake.fileViews.find((v) => (v as { id: string }).id === "full") as {
+      matches: (f: ExtensionDiffFile) => boolean;
+      layout: (input: unknown) => Promise<{ rows: unknown[] } | null>;
+    };
+    expect(view.matches(file)).toBe(true);
+    expect(view.matches({ ...file, isBinary: true })).toBe(false);
+    const layout = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    expect(layout?.rows.length).toBe(2);
+    const missing = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => null });
+    expect(missing).toBeNull();
+    const calls = createCalls();
+    fake.commands.get("fullFile")!.handler(commandContext(file, [], [], calls));
+    expect(calls.fileViewToggles).toEqual(["full"]);
+  });
+
+  test("F notifies when no file is selected", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const notified: Array<[string, string | undefined]> = [];
+    const calls = createCalls();
+    fake.commands.get("fullFile")!.handler(commandContext(null, [], notified, calls));
+    expect(notified).toEqual([["No file selected", "info"]]);
+    expect(calls.fileViewToggles).toEqual([]);
+  });
+
+  test("layout declines a file whose parsed hunk count does not match input.file.hunks", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const file = makeFile("1", "a.ts", {
+      patch: "@@ -1 +1 @@\n-a\n+b\n",
+      hunks: [
+        { index: 0, header: "@@" },
+        { index: 1, header: "@@" },
+      ] as never,
+    });
+    loadChangeset(fake, [file]);
+    const view = fake.fileViews.find((v) => (v as { id: string }).id === "full") as {
+      layout: (input: unknown) => Promise<{ rows: unknown[] } | null>;
+    };
+    const layout = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    expect(layout).toBeNull();
+  });
+});
+
+describe("J/K policy", () => {
+  test("outside single mode J/K walk every visible file, viewed or not", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[1]!, new Date());
+    const selected: string[] = [];
+    fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected, [], createCalls()));
+    expect(selected).toEqual(["2"]);
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("nextUnviewed")!.handler(commandContext(files[2]!, [], notified, createCalls()));
+    expect(notified[0]?.[0]).toBe("No file after this one");
   });
 });

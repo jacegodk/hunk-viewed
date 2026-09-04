@@ -2,17 +2,20 @@
  * hunk-viewed: GitLab-style "viewed" marks for hunk.
  *
  * `v` marks the selected file and jumps to the next unviewed one, or clears a viewed file.
- * `J` / `K` jump between unviewed files. `o` toggles single-file mode, which shows only one
- * file at a time; inside it `,`/`.` retarget the previous/next file and `Enter` loads a file
- * clicked in the pane, with `v`/`J`/`K` retargeting instead of jumping the full review. Marks
- * persist per repo in the XDG state dir and reset when a file's patch changes. The pane
- * replaces hunk's files pane and shows marks and progress.
+ * `F` toggles the full-file view: the whole file as a diff with unlimited context. `J` / `K`
+ * move to the next/previous file, walking every visible file outside single-file mode and only
+ * unviewed files inside it. `o` toggles single-file mode, which shows only one file at a time;
+ * inside it `,`/`.` retarget the previous/next file and `Enter` loads a file clicked in the
+ * pane, with `v`/`J`/`K` retargeting instead of jumping the full review. Marks persist per repo
+ * in the XDG state dir and reset when a file's patch changes. The pane replaces hunk's files
+ * pane and shows marks and progress.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ExtensionCommandContext, ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
 import { matchesKey } from "hunkdiff/extension";
 import { FOLDED_VIEW_ID, buildFoldedLayout } from "./src/foldedView";
+import { FULL_VIEW_ID, buildFullFileLayout } from "./src/fullFileView";
 import { findUnviewedNeighbor } from "./src/navigation";
 import {
   getReviewMirror,
@@ -24,6 +27,7 @@ import {
 } from "./src/reviewMirror";
 import { applySingleFileTransform, enterSingleFile, exitSingleFile, getSingleFileState, neighborPath, setSingleFileTarget } from "./src/singleFile";
 import { FilesPane } from "./src/sidebar/FilesPane";
+import { parseUnifiedPatch } from "./src/unifiedPatch";
 import { readRepoFiles, resolveViewedFilePath, writeRepoFiles } from "./src/viewedFile";
 import { clearRepo, getViewedState, isViewed, loadRepo, reconcileViewed, setPersist, toggleViewed } from "./src/viewedStore";
 
@@ -172,6 +176,31 @@ export default function (hunk: HunkExtensionAPI) {
     layout: ({ file }) => (isViewed(getViewedState(), file) ? buildFoldedLayout(file) : null),
   });
 
+  hunk.registerFileView({
+    id: FULL_VIEW_ID,
+    title: "Full file",
+    matches: (file) => !file.isBinary,
+    async layout(input) {
+      if (input.file.statsTruncated) return null;
+      const hunks = parseUnifiedPatch(input.file.patch);
+      if (hunks.length === 0) return null;
+      // The row-parity guard that keeps this view from lying about a file hunk didn't parse:
+      // decline before reading the document so a mismatch falls back to the raw diff.
+      if (hunks.length !== (input.file.hunks?.length ?? 0)) return null;
+      const document = await input.readDocument("new");
+      if (document === null || input.signal.aborted) return null;
+      return buildFullFileLayout(document, hunks);
+    },
+  });
+
+  hunk.registerCommand({ id: "fullFile", title: "Toggle full file", key: "F" }, (ctx) => {
+    if (!ctx.selection.file) {
+      ctx.notify("No file selected", "info");
+      return;
+    }
+    ctx.fileViews.toggle(FULL_VIEW_ID);
+  });
+
   hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "v" }, (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
@@ -198,31 +227,29 @@ export default function (hunk: HunkExtensionAPI) {
   });
 
   /**
-   * Move the selection (or, in single-file mode, the target) to the next/previous unviewed file.
-   * Shared by `nextUnviewed` and `previousUnviewed`, which only differ in direction and message.
+   * Move to the neighboring file: any visible file outside single mode, unviewed only inside it.
+   * Shared by `nextUnviewed` and `previousUnviewed`, which only differ in direction.
    */
-  function jumpUnviewed(ctx: ExtensionCommandContext, direction: 1 | -1, message: string) {
+  function jumpFile(ctx: ExtensionCommandContext, direction: 1 | -1) {
     const single = getSingleFileState();
     if (single.active) {
       const files = getReviewMirror().allFiles;
       const currentId = files.find((file) => file.path === single.targetPath)?.id ?? null;
       const next = findUnviewedNeighbor(files, currentId, direction, isViewedFile);
       if (next) retarget(next.path, (id) => ctx.commands.execute(id), ctx.notify);
-      else ctx.notify(message, "info");
+      else ctx.notify(direction === 1 ? "No unviewed file after this one" : "No unviewed file before this one", "info");
       return;
     }
     const selectedFileId = ctx.selection.file?.id ?? null;
-    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, direction, isViewedFile);
+    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, direction, () => false);
     if (next) ctx.navigation.selectFile(next.id);
-    else ctx.notify(message, "info");
+    else ctx.notify(direction === 1 ? "No file after this one" : "No file before this one", "info");
   }
 
-  hunk.registerCommand({ id: "nextUnviewed", title: "Next unviewed file", key: "J" }, (ctx) =>
-    jumpUnviewed(ctx, 1, "No unviewed file after this one"),
-  );
+  hunk.registerCommand({ id: "nextUnviewed", title: "Next file (next unviewed in single-file mode)", key: "J" }, (ctx) => jumpFile(ctx, 1));
 
-  hunk.registerCommand({ id: "previousUnviewed", title: "Previous unviewed file", key: "K" }, (ctx) =>
-    jumpUnviewed(ctx, -1, "No unviewed file before this one"),
+  hunk.registerCommand({ id: "previousUnviewed", title: "Previous file (previous unviewed in single-file mode)", key: "K" }, (ctx) =>
+    jumpFile(ctx, -1),
   );
 
   hunk.registerCommand({ id: "clearRepo", title: "Clear viewed marks for this repo" }, async (ctx) => {

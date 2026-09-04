@@ -266,13 +266,13 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 ## D. Full-file view
 
 - The extension registers a file view `hunk-viewed:full` titled `Full file`. `matches` is true for
-  every non-binary file. `layout` reads the new-side document (`readDocument("new")`) and the
-  old-side document (`readDocument("old")`, only when the patch has removed lines), parses
-  `file.patch` into hunks, and rebuilds a unified diff with unlimited context: every new-side
-  line in order; removed lines inserted at their hunk position in red (tone `removed`); added
-  lines green (tone `added`); unchanged lines plain. A gutter shows the new-side line number for
-  context and added lines and a blank for removed lines. Each row carries a `sourceRanges` entry
-  (new side for context/added, old side for removed). `hunkRows` spans each hunk's rows.
+  every non-binary file. `layout` parses `file.patch` into hunks; removed lines come from the
+  patch text; only the new-side document is read. It rebuilds a unified diff with unlimited
+  context: every new-side line in order; removed lines inserted at their hunk position in red
+  (tone `removed`); added lines green (tone `added`); unchanged lines plain. A gutter shows the
+  new-side line number for context and added lines and a blank for removed lines. Each row
+  carries a `sourceRanges` entry (new side for context/added, old side for removed). `hunkRows`
+  spans each hunk's rows.
 - `layout` returns `null` (raw diff) when a needed document is unavailable, when the patch does
   not parse, when the row count would exceed 10,000, or when the request is aborted.
 - Command `hunk-viewed.fullFile`, key `F`, title "Toggle full file": `ctx.fileViews.toggle("full")`

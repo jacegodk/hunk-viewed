@@ -18,8 +18,9 @@ Requires hunk 0.21 or newer (extension API 16).
 | Key   | Action                                                                    |
 | ----- | ------------------------------------------------------------------------- |
 | `v`   | Mark the selected file viewed and jump to the next unviewed file. On a viewed file: clear the mark. |
-| `J`   | Next unviewed file                                                        |
-| `K`   | Previous unviewed file                                                    |
+| `F`   | Toggle full file: the whole file as a diff with unlimited context; `F` again returns to the normal diff |
+| `J`   | Next file. In single-file mode: next unviewed file.                      |
+| `K`   | Previous file. In single-file mode: previous unviewed file.              |
 | `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. In single-file mode `J`/`K`/`v` switch the shown file instead of moving the selection. |
 
 **Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
@@ -33,6 +34,7 @@ Rebind in `~/.config/hunk/config.toml`:
 ```toml
 [keybindings]
 "hunk-viewed.toggleViewed" = "v"
+"hunk-viewed.fullFile" = "F"
 "hunk-viewed.nextUnviewed" = "J"
 "hunk-viewed.previousUnviewed" = "K"
 "hunk-viewed.singleFile" = "o"
@@ -44,7 +46,8 @@ Rebind in `~/.config/hunk/config.toml`:
   together with a sha256 of the file's patch. When the patch changes, the file is unviewed again.
 - Marks live in `$XDG_STATE_HOME/hunk/viewed.json`, default `~/.local/state/hunk/viewed.json`
   (`%LOCALAPPDATA%\hunk\viewed.json` on Windows). Marks older than 30 days are dropped.
-- Viewed files stay in the review stream and in the pane; only `v`, `J`, and `K` skip them.
+- Viewed files stay in the review stream and in the pane; only `v` skips them, and `J`/`K` skip
+  them too, but only inside single-file mode.
 
 ## Known limitations
 
@@ -58,6 +61,8 @@ Rebind in `~/.config/hunk/config.toml`:
   installed. Use `--extension <path>` while developing.
 - Folding is per loaded file, so after a reload run Fold viewed files again. The header bar of a folded file keeps its normal colors. Single-file mode reloads the review on every switch and starts at the top of the file.
 - Single-file mode needs a reloadable input (not a piped patch).
+- The full-file view needs a readable source (not a piped patch) and falls back to the normal
+  diff over 10,000 rows or when the file changed since the diff was taken.
 - Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
 
 ## Development
