@@ -32,6 +32,7 @@ interface FakeHunk {
   keyboardModes: Map<string, ExtensionKeyboardMode>;
   events: Map<ExtensionEventName, ExtensionEventHandler>;
   logs: string[];
+  fileViews: unknown[];
 }
 
 /** Build a minimal HunkExtensionAPI stub that records every registration call. */
@@ -41,6 +42,7 @@ function createFakeHunk(): FakeHunk {
   const keyboardModes: FakeHunk["keyboardModes"] = new Map();
   const events: FakeHunk["events"] = new Map();
   const logs: string[] = [];
+  const fileViews: unknown[] = [];
   const hunk = {
     apiVersion: HUNK_EXTENSION_API_VERSION,
     log: (message: string) => logs.push(message),
@@ -48,8 +50,9 @@ function createFakeHunk(): FakeHunk {
     registerCommand: (command: ExtensionCommand, handler: ExtensionCommandHandler) => commands.set(command.id, { command, handler }),
     registerKeyboardMode: (mode: ExtensionKeyboardMode) => keyboardModes.set(mode.id, mode),
     on: (event: ExtensionEventName, handler: ExtensionEventHandler) => events.set(event, handler),
+    registerFileView: (view: unknown) => fileViews.push(view),
   } as unknown as HunkExtensionAPI;
-  return { hunk, panes, commands, keyboardModes, events, logs };
+  return { hunk, panes, commands, keyboardModes, events, logs, fileViews };
 }
 
 function makeFile(id: string, path: string, extra: Partial<ExtensionDiffFile> = {}): ExtensionDiffFile {
@@ -72,15 +75,34 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
   } as unknown as ExtensionEventContext;
 }
 
+/** Calls a command handler made against `ctx.fileViews.select` and `ctx.commands.execute`. */
+interface CommandCalls {
+  fileViewSelects: Array<string | null>;
+  executed: string[];
+}
+
+/** Build an empty `CommandCalls` recorder for a `commandContext`. */
+function createCalls(): CommandCalls {
+  return { fileViewSelects: [], executed: [] };
+}
+
 function commandContext(
   selectedFile: ExtensionDiffFile | null,
   selectedIds: string[],
   notified: Array<[string, string | undefined]> = [],
+  calls: CommandCalls = createCalls(),
 ): ExtensionCommandContext {
   return {
     selection: { file: selectedFile, hunkIndex: null, currentLine: null },
     navigation: { selectFile: (id: string) => selectedIds.push(id) },
     notify: (message: string, type?: string) => notified.push([message, type]),
+    fileViews: { select: (id: string | null) => calls.fileViewSelects.push(id) },
+    commands: {
+      execute: (id: string) => {
+        calls.executed.push(id);
+        return true;
+      },
+    },
   } as unknown as ExtensionCommandContext;
 }
 
@@ -224,5 +246,56 @@ describe("clearRepo", () => {
     confirmed = true;
     await fake.commands.get("clearRepo")!.handler(ctx);
     expect(Object.keys(getViewedState().files)).toEqual([]);
+  });
+});
+
+describe("folded file view", () => {
+  test("registers the viewed file view that matches viewed files and folds them", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { hunks: [{ index: 0, header: "@@" }] as never }), makeFile("2", "b.ts")];
+    loadChangeset(fake, files);
+    const view = fake.fileViews[0] as { id: string; matches: (f: ExtensionDiffFile) => boolean; layout: (input: { file: ExtensionDiffFile }) => { rows: unknown[] } };
+    expect(view.id).toBe("viewed");
+    expect(view.matches(files[0]!)).toBe(false);
+    storeToggleViewed(files[0]!, new Date());
+    expect(view.matches(files[0]!)).toBe(true);
+    expect(view.layout({ file: files[0]! }).rows.length).toBe(1);
+  });
+
+  test("toggleViewed selects the folded view when marking and raw when clearing", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    const toggle = fake.commands.get("toggleViewed")!.handler;
+    toggle(commandContext(files[0]!, [], [], calls));
+    expect(calls.fileViewSelects).toEqual(["viewed"]);
+    toggle(commandContext(files[0]!, [], [], calls));
+    expect(calls.fileViewSelects).toEqual(["viewed", null]);
+  });
+
+  test("foldViewed anchors on a viewed file, applies to all matching, and restores the selection", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[1]!, new Date());
+    const calls = createCalls();
+    const selected: string[] = [];
+    fake.commands.get("foldViewed")!.handler(commandContext(files[0]!, selected, [], calls));
+    expect(selected).toEqual(["2", "1"]);
+    expect(calls.fileViewSelects).toEqual(["viewed"]);
+    expect(calls.executed).toEqual(["hunk.view.applyFilePresentationToAllMatching"]);
+  });
+
+  test("foldViewed notifies when nothing is viewed", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    loadChangeset(fake, [makeFile("1", "a.ts")]);
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("foldViewed")!.handler(commandContext(null, [], notified));
+    expect(notified[0]?.[0]).toBe("No viewed files to fold");
   });
 });

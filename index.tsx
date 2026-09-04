@@ -9,6 +9,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ExtensionContext, ExtensionDiffFile, HunkExtensionAPI } from "hunkdiff/extension";
+import { FOLDED_VIEW_ID, buildFoldedLayout } from "./src/foldedView";
 import { findUnviewedNeighbor } from "./src/navigation";
 import {
   getReviewMirror,
@@ -100,6 +101,13 @@ export default function (hunk: HunkExtensionAPI) {
     component: FilesPane,
   });
 
+  hunk.registerFileView({
+    id: FOLDED_VIEW_ID,
+    title: "Viewed",
+    matches: (file) => isViewed(getViewedState(), file),
+    layout: ({ file }) => buildFoldedLayout(file),
+  });
+
   hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "v" }, (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
@@ -107,7 +115,11 @@ export default function (hunk: HunkExtensionAPI) {
       return;
     }
     const result = toggleViewed(file, new Date());
-    if (result === "cleared") return;
+    if (result === "cleared") {
+      ctx.fileViews.select(null);
+      return;
+    }
+    ctx.fileViews.select(FOLDED_VIEW_ID);
     const next = findUnviewedNeighbor(navigationFiles(file.id), file.id, 1, isViewedFile);
     if (next) ctx.navigation.selectFile(next.id);
     else ctx.notify("No unviewed file after this one", "info");
@@ -135,6 +147,23 @@ export default function (hunk: HunkExtensionAPI) {
       confirmLabel: "Clear",
     });
     if (confirmed) clearRepo();
+  });
+
+  hunk.registerCommand({ id: "foldViewed", title: "Fold viewed files" }, (ctx) => {
+    const state = getViewedState();
+    const viewedVisible = visibleFiles(getReviewMirror()).filter((file) => isViewed(state, file));
+    if (viewedVisible.length === 0) {
+      ctx.notify("No viewed files to fold", "info");
+      return;
+    }
+    const selected = ctx.selection.file;
+    // The bulk command only runs when the selected file already presents the view, so anchor
+    // on a viewed file first and come back afterwards.
+    const anchor = selected && isViewed(state, selected) ? selected : viewedVisible[0]!;
+    if (anchor.id !== selected?.id) ctx.navigation.selectFile(anchor.id);
+    ctx.fileViews.select(FOLDED_VIEW_ID);
+    ctx.commands.execute("hunk.view.applyFilePresentationToAllMatching");
+    if (selected && anchor.id !== selected.id) ctx.navigation.selectFile(selected.id);
   });
 
 }
