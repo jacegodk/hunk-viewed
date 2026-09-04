@@ -4,6 +4,7 @@ import {
   fileMatchesFilter,
   getReviewMirror,
   resetReviewMirrorForTests,
+  setMirrorAllFiles,
   setMirrorFiles,
   setMirrorFilter,
   setMirrorSelectedFileId,
@@ -41,7 +42,15 @@ describe("fileMatchesFilter", () => {
 
 describe("reviewMirror", () => {
   test("starts empty", () => {
-    expect(getReviewMirror()).toEqual({ files: [], filter: "", selectedFileId: null });
+    expect(getReviewMirror()).toEqual({ files: [], allFiles: [], filter: "", selectedFileId: null });
+  });
+
+  test("setMirrorAllFiles records the untransformed list separately from files", () => {
+    const all = [file("1", "a.ts"), file("2", "b.ts")];
+    setMirrorAllFiles(all);
+    setMirrorFiles([all[0]!]);
+    expect(getReviewMirror().allFiles.length).toBe(2);
+    expect(getReviewMirror().files.length).toBe(1);
   });
 
   test("visibleFiles applies the filter in review order", () => {

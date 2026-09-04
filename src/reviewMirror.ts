@@ -6,12 +6,14 @@ import { normalizeDiffPath } from "./sidebar/entries";
 export interface ReviewMirror {
   /** Full changeset in review order, unfiltered. */
   files: readonly ExtensionDiffFile[];
+  /** Every file the changeset transform saw before single-file mode dropped any; equals `files` outside that mode. */
+  allFiles: readonly ExtensionDiffFile[];
   /** Hunk's file filter text. */
   filter: string;
   selectedFileId: string | null;
 }
 
-const initial: ReviewMirror = { files: [], filter: "", selectedFileId: null };
+const initial: ReviewMirror = { files: [], allFiles: [], filter: "", selectedFileId: null };
 let mirror: ReviewMirror = initial;
 const listeners = new Set<() => void>();
 
@@ -39,6 +41,11 @@ export function useReviewMirror(): ReviewMirror {
 /** Replace the changeset after `changeset_loaded` or `session_reload`. */
 export function setMirrorFiles(files: readonly ExtensionDiffFile[]): void {
   publish({ files });
+}
+
+/** Record the untransformed changeset from inside the changeset transform. */
+export function setMirrorAllFiles(files: readonly ExtensionDiffFile[]): void {
+  publish({ allFiles: files });
 }
 
 /** Record the filter after `filter_changed`. */
