@@ -17,15 +17,15 @@ Requires hunk 0.21 or newer (extension API 16).
 
 | Key   | Action                                                                    |
 | ----- | ------------------------------------------------------------------------- |
-| `v`   | Mark the selected file viewed and jump to the next unviewed file. On a viewed file: clear the mark. |
+| `v`   | Mark the selected file viewed and fold it, staying on it. On a viewed file: clear the mark and unfold it, staying on it. |
 | `F`   | Toggle full file: the whole file as a diff with unlimited context; `F` again returns to the normal diff |
 | `J`   | Next file. In single-file mode: next unviewed file.                      |
 | `K`   | Previous file. In single-file mode: previous unviewed file.              |
-| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. In single-file mode `J`/`K`/`v` switch the shown file instead of moving the selection. |
+| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
 
 **Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
 
-`v` folds and unfolds the file it marks (outside single-file mode).
+`v` folds and unfolds the file it marks, in and out of single-file mode.
 
 **Extensions → Clear viewed marks for this repo** removes every mark for the current repo.
 

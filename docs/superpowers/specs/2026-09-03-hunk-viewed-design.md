@@ -37,7 +37,7 @@ through the review, and keep the marks between hunk runs.
 
 | Id                            | Key  | Menu | Action                                                            |
 | ----------------------------- | ---- | ---- | ----------------------------------------------------------------- |
-| `hunk-viewed.toggleViewed`    | `v`  | yes  | Unviewed file: mark it, then select the next unviewed file. Viewed file: clear the mark, stay. |
+| `hunk-viewed.toggleViewed`    | `v`  | yes  | Unviewed file: mark it, stay on it. Viewed file: clear the mark, stay. |
 | `hunk-viewed.nextUnviewed`    | `J`  | yes  | Select the next unviewed visible file after the selection. No wrap. |
 | `hunk-viewed.previousUnviewed`| `K`  | yes  | Select the previous unviewed visible file. No wrap.               |
 | `hunk-viewed.filesMode`       | `F`  | yes  | Enter the files keyboard mode.                                    |
@@ -174,8 +174,8 @@ with an empty record. Save errors show one warning notice and keep the in-memory
   resolution), `patchHash`, `navigation`, and `sidebar/entries` (flat and tree, ported cases).
 - Manual TTY check from the hunk checkout on a real diff:
   `hunk diff --extension ~/work/hunk-viewed`. Verify: pane replaces the files pane, `v` marks and
-  jumps, `J`/`K` skip, `F` mode moves with `j`/`k`, marks survive a restart, a changed file loses
-  its mark.
+  folds, staying on the file, `J`/`K` skip, `F` mode moves with `j`/`k`, marks survive a restart,
+  a changed file loses its mark.
 
 ## Install
 
@@ -199,10 +199,8 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
   "the file is viewed". `layout` returns one row, `✓ viewed  <n> hunks  +a -d` (check tone
   `added`, rest `muted`), with every hunk mapped to row 0. A file with no hunks returns zero rows
   and folds to its header alone.
-- `v` on an unviewed file: mark, `ctx.fileViews.select("viewed")` on the selected file (skipped
-  in single-file mode, since retargeting drops the file from the changeset anyway), then jump
-  to the next unviewed file. `v` on a viewed file: clear the mark, `ctx.fileViews.select(null)`,
-  stay.
+- `v` on an unviewed file: mark, `ctx.fileViews.select("viewed")` on the selected file, and stay
+  on it. `v` on a viewed file: clear the mark, `ctx.fileViews.select(null)`, stay.
 - `layout` re-checks `isViewed` itself and returns `null` when the file is not viewed, rather
   than trusting `matches` to have gated every call: hunk can ask a view to re-derive a stale
   presentation (e.g. right after `clearRepo`), and a declined layout falls back to the raw diff.
@@ -249,11 +247,12 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 - Mode keys: `,` / `.` move the target to the previous / next file in `allFiles` (viewed or not)
   and refresh, or notify ("No file before/after this one") at either end; `enter` loads
   `pendingPath` and refreshes if set, otherwise passes through untouched; everything else passes.
-  Every retarget that reloads (`,`/`.`, `enter`, and `J`/`K`/`v` below) warns
+  Every retarget that reloads (`,`/`.`, `enter`, and `J`/`K` below) warns
   "This input cannot be reloaded, so single-file mode is unavailable" if the refresh command
   itself returns `false`.
-- In single mode, `J`, `K`, and `v` compute their target over `allFiles` and switch by setting
-  the target and refreshing instead of `selectFile`.
+- In single mode, `J` and `K` compute their target over `allFiles` and switch by setting the
+  target and refreshing instead of `selectFile`. `v` marks/folds or clears/unfolds the target
+  in place and does not retarget (see Round 4).
 - Pane in single mode: rows come from `allFiles`; the highlighted row is the target; the counter
   is over `allFiles`; a click records `pendingPath` and shows the notice
   `Enter loads <name>`.
@@ -284,5 +283,11 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 - Outside single-file mode, `J`/`K` select the next/previous **visible file, viewed or not**
   (no wrap, notices at the ends), so a viewed file can be reached and cleared with `v`.
 - In single-file mode, `J`/`K` keep skipping viewed files over `allFiles`.
-- `v` after marking still jumps to the next unviewed file.
+- `v` after marking stays on the file (see Round 4).
 - `j`/`k` are hunk's own line steps and are untouched.
+
+---
+
+# Round 4 — 2026-09-04
+
+`v` no longer moves the selection.

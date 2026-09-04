@@ -219,23 +219,28 @@ describe("lifecycle events", () => {
 });
 
 describe("toggleViewed", () => {
-  test("marks the selected file and selects the next unviewed one, then clears on a second call", () => {
+  test("marks the selected file and selects the folded view, staying on it; clears on a second call", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
     loadChangeset(fake, files);
 
     const selected: string[] = [];
-    const ctx = commandContext(files[0]!, selected);
+    const calls = createCalls();
+    const ctx = commandContext(files[0]!, selected, [], calls);
     fake.commands.get("toggleViewed")!.handler(ctx);
 
     expect(isViewed(getViewedState(), files[0]!)).toBe(true);
-    expect(selected).toEqual(["2"]);
+    expect(calls.fileViewSelects).toEqual(["viewed"]);
+    expect(selected).toEqual([]);
+    expect(calls.executed).toEqual([]);
 
     fake.commands.get("toggleViewed")!.handler(ctx);
 
     expect(isViewed(getViewedState(), files[0]!)).toBe(false);
-    expect(selected).toEqual(["2"]);
+    expect(calls.fileViewSelects).toEqual(["viewed", null]);
+    expect(selected).toEqual([]);
+    expect(calls.executed).toEqual([]);
   });
 });
 
@@ -546,7 +551,7 @@ describe("single-file mode", () => {
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 
-  test("toggleViewed marks without folding, and retargets to the next unviewed file", () => {
+  test("toggleViewed marks and folds the file in single-file mode, staying on it", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -556,10 +561,9 @@ describe("single-file mode", () => {
     const calls = createCalls();
     fake.commands.get("toggleViewed")!.handler(commandContext(files[0]!, [], [], calls));
     expect(isViewed(getViewedState(), files[0]!)).toBe(true);
-    // The file leaves single-file mode's changeset on retarget anyway, so folding it is moot.
-    expect(calls.fileViewSelects).toEqual([]);
-    expect(getSingleFileState().targetPath).toBe("b.ts");
-    expect(calls.executed).toEqual(["hunk.app.refresh"]);
+    expect(calls.fileViewSelects).toEqual(["viewed"]);
+    expect(getSingleFileState().targetPath).toBe("a.ts");
+    expect(calls.executed).toEqual([]);
   });
 });
 

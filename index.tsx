@@ -1,14 +1,14 @@
 /**
  * hunk-viewed: GitLab-style "viewed" marks for hunk.
  *
- * `v` marks the selected file and jumps to the next unviewed one, or clears a viewed file.
- * `F` toggles the full-file view: the whole file as a diff with unlimited context. `J` / `K`
- * move to the next/previous file, walking every visible file outside single-file mode and only
- * unviewed files inside it. `o` toggles single-file mode, which shows only one file at a time;
- * inside it `,`/`.` retarget the previous/next file and `Enter` loads a file clicked in the
- * pane, with `v`/`J`/`K` retargeting instead of jumping the full review. Marks persist per repo
- * in the XDG state dir and reset when a file's patch changes. The pane replaces hunk's files
- * pane and shows marks and progress.
+ * `v` marks the selected file, folds it, and stays selected; on a viewed file it clears the
+ * mark, unfolds it, and stays. `F` toggles the full-file view: the whole file as a diff with
+ * unlimited context. `J` / `K` move to the next/previous file, walking every visible file
+ * outside single-file mode and only unviewed files inside it. `o` toggles single-file mode,
+ * which shows only one file at a time; inside it `,`/`.` retarget the previous/next file and
+ * `Enter` loads a file clicked in the pane, with `J`/`K` retargeting instead of jumping the
+ * full review. Marks persist per repo in the XDG state dir and reset when a file's patch
+ * changes. The pane replaces hunk's files pane and shows marks and progress.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -208,22 +208,7 @@ export default function (hunk: HunkExtensionAPI) {
       return;
     }
     const result = toggleViewed(file, new Date());
-    if (result === "cleared") {
-      ctx.fileViews.select(null);
-      return;
-    }
-    const single = getSingleFileState();
-    // Retargeting drops the file from single-file mode's changeset anyway, so folding it is moot.
-    if (!single.active) ctx.fileViews.select(FOLDED_VIEW_ID);
-    if (single.active) {
-      const next = findUnviewedNeighbor(getReviewMirror().allFiles, file.id, 1, isViewedFile);
-      if (next) retarget(next.path, (id) => ctx.commands.execute(id), ctx.notify);
-      else ctx.notify("No unviewed file after this one", "info");
-      return;
-    }
-    const next = findUnviewedNeighbor(navigationFiles(file.id), file.id, 1, isViewedFile);
-    if (next) ctx.navigation.selectFile(next.id);
-    else ctx.notify("No unviewed file after this one", "info");
+    ctx.fileViews.select(result === "cleared" ? null : FOLDED_VIEW_ID);
   });
 
   /**
