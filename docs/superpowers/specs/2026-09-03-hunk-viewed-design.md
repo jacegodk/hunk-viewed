@@ -174,7 +174,7 @@ with an empty record. Save errors show one warning notice and keep the in-memory
   resolution), `patchHash`, `navigation`, and `sidebar/entries` (flat and tree, ported cases).
 - Manual TTY check from the hunk checkout on a real diff:
   `hunk diff --extension ~/work/hunk-viewed`. Verify: pane replaces the files pane, `v` marks and
-  folds, staying on the file, `J`/`K` skip, `F` mode moves with `j`/`k`, marks survive a restart,
+  folds, staying on the file, `J`/`K` move between files, `F` mode moves with `j`/`k`, marks survive a restart,
   a changed file loses its mark.
 
 ## Install

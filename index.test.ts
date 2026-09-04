@@ -430,7 +430,19 @@ describe("single-file mode", () => {
     expect(calls.executed).toEqual(["hunk.app.refresh", "hunk.app.refresh"]);
   });
 
-  test("leaving the mode reselects the file it was showing once the exit reload's session_reload lands", () => {
+  test("a plain changeset_loaded (first load, no returnPath) selects nothing", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    const selectedIds: string[] = [];
+    fake.events.get("startup")!({ cwd: repoDir }, eventContext(repoDir));
+    fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, eventContext(repoDir, () => {}, selectedIds));
+
+    expect(selectedIds).toEqual([]);
+    expect(getSingleFileState().returnPath).toBeNull();
+  });
+
+  test("leaving the mode reselects the file it was showing, once the exit reload's changeset_loaded and session_reload both land", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -440,8 +452,12 @@ describe("single-file mode", () => {
     mode.onExit!(modeContext(createCalls()));
     expect(getSingleFileState().returnPath).toBe("b.ts");
 
+    // hunk fires changeset_loaded then session_reload back-to-back, synchronously, on every
+    // non-initial reload; returnPath must survive the first and be consumed by the second.
     const selectedIds: string[] = [];
-    fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, eventContext(repoDir, () => {}, selectedIds));
+    const ctx = eventContext(repoDir, () => {}, selectedIds);
+    fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, ctx);
+    fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, ctx);
 
     expect(selectedIds).toEqual(["2"]);
     expect(getSingleFileState().returnPath).toBeNull();

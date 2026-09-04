@@ -121,9 +121,6 @@ export default function (hunk: HunkExtensionAPI) {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
-    // A fresh load has no exit-reload to reselect into; a stale returnPath here would fire on
-    // some later, unrelated reload.
-    clearSingleFileReturn();
   });
   hunk.on("session_reload", ({ changeset }, ctx) => {
     setMirrorFiles(changeset.files);
