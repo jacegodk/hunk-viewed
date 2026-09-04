@@ -468,6 +468,30 @@ describe("single-file mode", () => {
     expect(selectedIds).toEqual(["2", "2"]);
   });
 
+  test("the settle reselect skips itself if the user already moved off the shown file", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    enterSingleFile("b.ts");
+    const mode = fake.keyboardModes.get("single")!;
+    mode.onExit!(modeContext(createCalls()));
+
+    const selectedIds: string[] = [];
+    const ctx = eventContext(repoDir, () => {}, selectedIds);
+    fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, ctx);
+    fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, ctx);
+
+    // Past the first (0 ms) reselect, the user moves on — e.g. J/K/,/. — before the 60 ms settle
+    // call fires. The settle call must not yank the selection back to the file it was for.
+    await new Promise((r) => setTimeout(r, 0));
+    fake.events.get("selection_changed")!({ fileId: "3", hunkIndex: null }, ctx);
+
+    await new Promise((r) => setTimeout(r, 70));
+
+    expect(selectedIds).toEqual(["2"]);
+  });
+
   test("o notifies when the current input cannot be reloaded, and does not enter the mode", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);

@@ -9,7 +9,7 @@ export const FULL_VIEW_MAX_ROWS = 10_000;
 /** Below this terminal width, a split layout has no room for two usable columns; one column reads better. */
 const MIN_SPLIT_WIDTH = 48;
 /**
- * Hunk's layout validator caps (`src/core/review/layout.ts` in the hunk checkout): a layout with
+ * Hunk's layout validator caps (`src/ui/fileViews/layout.ts` in the hunk checkout): a layout with
  * more spans or text characters than these is rejected with a user-visible warning. Single-column
  * rows stay well under both; a split row's five spans per row (two per column plus the separator)
  * can cross them on a very wide terminal or a very long file, so `buildSplitFileLayout` falls back

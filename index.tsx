@@ -143,7 +143,13 @@ export default function (hunk: HunkExtensionAPI) {
       // is a live guard, safe to call after the handler returns.
       if (file) {
         setTimeout(() => ctx.navigation.selectFile(file.id), 0);
-        setTimeout(() => ctx.navigation.selectFile(file.id), 60);
+        setTimeout(() => {
+          // Only re-align if the user is still on the file this reselect is for: `,`/`.`/`J`/`K`
+          // between the two timeouts already moved `selection_changed` on, and firing here
+          // unconditionally would yank the selection back to the file they left.
+          const { selectedFileId } = getReviewMirror();
+          if (selectedFileId === null || selectedFileId === file.id) ctx.navigation.selectFile(file.id);
+        }, 60);
       }
     }
   });
