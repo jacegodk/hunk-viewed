@@ -15,9 +15,14 @@ export interface ReviewMirror {
   /** Hunk's file filter text. */
   filter: string;
   selectedFileId: string | null;
+  /**
+   * Hunk's own resolved diff-column layout, from `layout_changed`. Null until the first event
+   * arrives (hunk only announces layout on changes after startup, not the initial resolution).
+   */
+  resolvedLayout: "split" | "stack" | null;
 }
 
-const initial: ReviewMirror = { files: [], allFiles: [], filter: "", selectedFileId: null };
+const initial: ReviewMirror = { files: [], allFiles: [], filter: "", selectedFileId: null, resolvedLayout: null };
 let mirror: ReviewMirror = initial;
 const listeners = new Set<() => void>();
 
@@ -65,6 +70,11 @@ export function setMirrorFilter(filter: string): void {
 /** Record the selection after `selection_changed`. */
 export function setMirrorSelectedFileId(fileId: string | null): void {
   publish({ selectedFileId: fileId });
+}
+
+/** Record hunk's resolved diff-column layout after `layout_changed`. */
+export function setMirrorResolvedLayout(layout: "split" | "stack"): void {
+  publish({ resolvedLayout: layout });
 }
 
 /** The file facts hunk's filter reads (`src/core/review/selectors.ts`). */

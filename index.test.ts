@@ -642,6 +642,24 @@ describe("full file view", () => {
     expect(calls.fileViewToggles).toEqual([]);
   });
 
+  test("layout_changed sets the mirror, and the full view follows hunk's resolved layout", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const file = makeFile("1", "a.ts", { patch: "@@ -1 +1 @@\n-a\n+b\n", hunks: [{ index: 0, header: "@@" }] as never });
+    loadChangeset(fake, [file]);
+    const view = fake.fileViews.find((v) => (v as { id: string }).id === "full") as {
+      layout: (input: unknown) => Promise<{ rows: { spans: { text: string }[] }[] } | null>;
+    };
+
+    fake.events.get("layout_changed")!({ mode: "auto", layout: "split" }, eventContext(repoDir));
+    const split = await view.layout({ file, width: 41, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    expect(split!.rows.some((row) => row.spans.map((s) => s.text).join("").includes(" │ "))).toBe(true);
+
+    fake.events.get("layout_changed")!({ mode: "auto", layout: "stack" }, eventContext(repoDir));
+    const stacked = await view.layout({ file, width: 41, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+    expect(stacked!.rows.some((row) => row.spans.map((s) => s.text).join("").includes(" │ "))).toBe(false);
+  });
+
   test("layout declines a file whose parsed hunk count does not match input.file.hunks", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);

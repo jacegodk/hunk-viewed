@@ -22,6 +22,7 @@ import {
   setMirrorAllFiles,
   setMirrorFiles,
   setMirrorFilter,
+  setMirrorResolvedLayout,
   setMirrorSelectedFileId,
   visibleFiles,
 } from "./src/reviewMirror";
@@ -141,6 +142,7 @@ export default function (hunk: HunkExtensionAPI) {
   });
   hunk.on("selection_changed", ({ fileId }) => setMirrorSelectedFileId(fileId));
   hunk.on("filter_changed", ({ filter }) => setMirrorFilter(filter));
+  hunk.on("layout_changed", ({ layout }) => setMirrorResolvedLayout(layout));
 
   hunk.transformChangeset((changeset) => {
     setMirrorAllFiles(
@@ -207,7 +209,10 @@ export default function (hunk: HunkExtensionAPI) {
       if (hunks.length !== (input.file.hunks?.length ?? 0)) return null;
       const document = await input.readDocument("new");
       if (document === null || input.signal.aborted) return null;
-      return buildFullFileLayout(document, hunks);
+      // hunk only announces its resolved layout on a change after startup (`layout_changed`); until
+      // one arrives, guess from the row width the same way hunk's own `auto` mode would.
+      const layout = getReviewMirror().resolvedLayout ?? (input.width >= 100 ? "split" : "stack");
+      return buildFullFileLayout(document, hunks, { columns: layout === "split" ? "split" : "single", width: input.width });
     },
   });
 

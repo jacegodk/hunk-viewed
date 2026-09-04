@@ -278,6 +278,11 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 - Command `hunk-viewed.fullFile`, key `F`, title "Toggle full file": `ctx.fileViews.toggle("full")`
   on the selected file. Toggling a folded viewed file switches it to the full view; `v` still
   clears the mark and returns it to raw.
+- Renders two columns (old | new) when hunk's layout is split, one column when stacked: the
+  extension mirrors hunk's own resolved layout from `layout_changed`
+  (`{ mode, layout: "split" | "stack" }`, fired only on changes after startup) and picks
+  `buildFullFileLayout`'s `columns` option from it, falling back to a width heuristic until the
+  first event arrives.
 
 ## E. Navigation policy
 

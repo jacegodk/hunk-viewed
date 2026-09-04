@@ -106,4 +106,60 @@ describe("buildFullFileLayout", () => {
     expect(layout!.hunkRows).toEqual([{ startRow: 2, endRow: 3 }]);
     expectValidFileViewLayout(layout!, 1);
   });
+
+  test("with no columns option (or columns: 'single' explicitly), output is identical to the default", () => {
+    const hunks = parseUnifiedPatch(patch.replace("-2,3 +2,3", "-1,3 +1,3"));
+    const bare = buildFullFileLayout(newDocument, hunks);
+    const explicit = buildFullFileLayout(newDocument, hunks, { columns: "single" });
+    expect(explicit).toEqual(bare);
+  });
+});
+
+describe("buildFullFileLayout split columns", () => {
+  const splitHunks = parseUnifiedPatch(patch.replace("-2,3 +2,3", "-1,3 +1,3"));
+
+  test("renders two columns (old | new) separated by ' │ ', 41 wide (colWidth 19)", () => {
+    const layout = buildFullFileLayout(newDocument, splitHunks, { columns: "split", width: 41 });
+    expect(layout).not.toBeNull();
+    expect(texts(layout!)).toEqual([
+      "1   line one        │ 1   line one       ",
+      "2 - line two        │ 2 + line two chang…",
+      "3   line three      │ 3   line three     ",
+      "4   line four       │ 4   line four      ",
+      "5   line five       │ 5   line five      ",
+      "6   line six        │ 6   line six       ",
+    ]);
+    // Confirmed against a probe run of buildFullFileLayout at width 41 (colWidth 19); see spans
+    // assertions below for the exact tone split.
+    // The paired change row: left carries the removed text with a "-" marker, right the added
+    // text with a "+" marker.
+    expect(layout!.rows[1]!.spans[1]).toEqual({ text: "- line two       ", tone: "removed" });
+    expect(layout!.rows[1]!.spans[4]).toEqual({ text: "+ line two chang…", tone: "added" });
+    // A context row shows the same text on both sides.
+    expect(layout!.rows[0]!.spans[1]!.text.trim()).toBe("line one");
+    expect(layout!.rows[0]!.spans[4]!.text.trim()).toBe("line one");
+    expectValidFileViewLayout(layout!, 2);
+  });
+
+  test("a run of 2 removed + 1 added pairs index-wise; the leftover removed row's right side is blank", () => {
+    const layout = buildFullFileLayout("a\nx\nd\n", parseUnifiedPatch("@@ -2,2 +2,1 @@\n-b\n-c\n+x\n"), { columns: "split", width: 41 });
+    expect(layout).not.toBeNull();
+    expect(texts(layout!)).toEqual([
+      "1   a               │ 1   a              ",
+      "2 - b               │ 2 + x              ",
+      "3 - c               │                    ",
+      "4   d               │ 3   d              ",
+    ]);
+    expect(layout!.rows[2]!.spans[3]).toEqual({ text: "  ", tone: "muted" });
+    expect(layout!.rows[2]!.spans[4]).toEqual({ text: "                 " });
+    expectValidFileViewLayout(layout!, 1);
+  });
+
+  test("falls back to the single-column output when the width leaves no room for two columns", () => {
+    const single = buildFullFileLayout(newDocument, splitHunks);
+    const tooNarrow = buildFullFileLayout(newDocument, splitHunks, { columns: "split", width: 10 });
+    const missingWidth = buildFullFileLayout(newDocument, splitHunks, { columns: "split" });
+    expect(tooNarrow).toEqual(single);
+    expect(missingWidth).toEqual(single);
+  });
 });

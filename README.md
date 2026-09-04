@@ -18,7 +18,7 @@ Requires hunk 0.21 or newer (extension API 16).
 | Key   | Action                                                                    |
 | ----- | ------------------------------------------------------------------------- |
 | `v`   | Mark the selected file viewed and fold it, staying on it. On a viewed file: clear the mark and unfold it, staying on it. |
-| `F`   | Toggle full file: the whole file as a diff with unlimited context; `F` again returns to the normal diff |
+| `F`   | Toggle full file: the whole file as a diff with unlimited context, side by side when hunk's layout is split, one column when stacked; `F` again returns to the normal diff |
 | `J`   | Next file.                                                                |
 | `K`   | Previous file.                                                            |
 | `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves and keeps that file selected. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
@@ -66,6 +66,9 @@ Rebind in `~/.config/hunk/config.toml`:
   diff over 10,000 rows or when the file changed since the diff was taken.
 - The full-file view has no syntax highlighting (the extension API only exposes semantic tones).
 - The full-file view does not follow you across single-file mode switches; press F again.
+- The full-file view's side-by-side columns follow hunk's own split/stack layout. Hunk re-lays
+  out the view automatically on a width change, but a pure layout-mode switch (`1`/`2`/`0`) may
+  not re-render it; press `F` twice to force it.
 - Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
 
 ## Development

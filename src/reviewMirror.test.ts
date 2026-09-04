@@ -7,6 +7,7 @@ import {
   setMirrorAllFiles,
   setMirrorFiles,
   setMirrorFilter,
+  setMirrorResolvedLayout,
   setMirrorSelectedFileId,
   visibleFiles,
 } from "./reviewMirror";
@@ -42,7 +43,15 @@ describe("fileMatchesFilter", () => {
 
 describe("reviewMirror", () => {
   test("starts empty", () => {
-    expect(getReviewMirror()).toEqual({ files: [], allFiles: [], filter: "", selectedFileId: null });
+    expect(getReviewMirror()).toEqual({ files: [], allFiles: [], filter: "", selectedFileId: null, resolvedLayout: null });
+  });
+
+  test("setMirrorResolvedLayout records hunk's resolved layout", () => {
+    expect(getReviewMirror().resolvedLayout).toBeNull();
+    setMirrorResolvedLayout("split");
+    expect(getReviewMirror().resolvedLayout).toBe("split");
+    setMirrorResolvedLayout("stack");
+    expect(getReviewMirror().resolvedLayout).toBe("stack");
   });
 
   test("setMirrorAllFiles records the untransformed list separately from files", () => {
