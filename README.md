@@ -20,7 +20,9 @@ Requires hunk 0.21 or newer (extension API 16).
 | `v`   | Mark the selected file viewed and jump to the next unviewed file. On a viewed file: clear the mark. |
 | `J`   | Next unviewed file                                                        |
 | `K`   | Previous unviewed file                                                    |
-| `F`   | Files mode: `j`/`k` and the arrows move between files, `Enter`/`Esc` leave |
+| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves. |
+
+**Extensions → Fold viewed files** folds every viewed file to one line; `v` folds and unfolds the file it marks.
 
 **Extensions → Clear viewed marks for this repo** removes every mark for the current repo.
 
@@ -31,7 +33,7 @@ Rebind in `~/.config/hunk/config.toml`:
 "hunk-viewed.toggleViewed" = "v"
 "hunk-viewed.nextUnviewed" = "J"
 "hunk-viewed.previousUnviewed" = "K"
-"hunk-viewed.filesMode" = "F"
+"hunk-viewed.singleFile" = "o"
 ```
 
 ## How marks work
@@ -52,6 +54,7 @@ Rebind in `~/.config/hunk/config.toml`:
 - Row widths are measured in code points. Wide file names (CJK, emoji) can push the stats column.
 - `hunk extension install <path>` clones the path's committed HEAD. Uncommitted work is not
   installed. Use `--extension <path>` while developing.
+- Folding is per loaded file, so after a reload run Fold viewed files again. The header bar of a folded file keeps its normal colors. Single-file mode reloads the review on every switch and starts at the top of the file.
 
 ## Development
 
