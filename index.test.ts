@@ -537,7 +537,7 @@ describe("single-file mode", () => {
     expect(notified).toEqual([["This input cannot be reloaded, so single-file mode is unavailable", "warning"]]);
   });
 
-  test("J and K retarget over all files while the mode is active", () => {
+  test("J retargets to the very next file in single-file mode without skipping viewed ones", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -549,11 +549,11 @@ describe("single-file mode", () => {
     const selected: string[] = [];
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected, [], calls));
     expect(selected).toEqual([]);
-    expect(getSingleFileState().targetPath).toBe("c.ts");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 
-  test("K retargets backward over allFiles and refreshes", () => {
+  test("K retargets to the very previous file in single-file mode without skipping viewed ones", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -565,7 +565,7 @@ describe("single-file mode", () => {
     const selected: string[] = [];
     fake.commands.get("previousUnviewed")!.handler(commandContext(files[2]!, selected, [], calls));
     expect(selected).toEqual([]);
-    expect(getSingleFileState().targetPath).toBe("a.ts");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
     expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 

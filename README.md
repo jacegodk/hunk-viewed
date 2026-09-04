@@ -19,8 +19,8 @@ Requires hunk 0.21 or newer (extension API 16).
 | ----- | ------------------------------------------------------------------------- |
 | `v`   | Mark the selected file viewed and fold it, staying on it. On a viewed file: clear the mark and unfold it, staying on it. |
 | `F`   | Toggle full file: the whole file as a diff with unlimited context; `F` again returns to the normal diff |
-| `J`   | Next file. In single-file mode: next unviewed file.                      |
-| `K`   | Previous file. In single-file mode: previous unviewed file.              |
+| `J`   | Next file.                                                                |
+| `K`   | Previous file.                                                            |
 | `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves and keeps that file selected. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
 
 **Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
@@ -40,7 +40,7 @@ Rebind in `~/.config/hunk/config.toml`:
 "hunk-viewed.singleFile" = "o"
 ```
 
-`nextUnviewed`/`previousUnviewed` kept their command ids from round 1; they now move next/previous file (unviewed only inside single-file mode), not next/previous unviewed file everywhere.
+`nextUnviewed`/`previousUnviewed` kept their command ids from round 1; they now move next/previous file everywhere, not next/previous unviewed file.
 
 ## How marks work
 
@@ -48,8 +48,7 @@ Rebind in `~/.config/hunk/config.toml`:
   together with a sha256 of the file's patch. When the patch changes, the file is unviewed again.
 - Marks live in `$XDG_STATE_HOME/hunk/viewed.json`, default `~/.local/state/hunk/viewed.json`
   (`%LOCALAPPDATA%\hunk\viewed.json` on Windows). Marks older than 30 days are dropped.
-- Viewed files stay in the review stream and in the pane; only `v` skips them, and `J`/`K` skip
-  them too, but only inside single-file mode.
+- Viewed files stay in the review stream and in the pane; `J`/`K` never skip them.
 
 ## Known limitations
 

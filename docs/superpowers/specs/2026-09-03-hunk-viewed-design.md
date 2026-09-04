@@ -281,9 +281,11 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 
 ## E. Navigation policy
 
+- `J`/`K` select the next/previous file in every mode; viewed files are not skipped.
 - Outside single-file mode, `J`/`K` select the next/previous **visible file, viewed or not**
   (no wrap, notices at the ends), so a viewed file can be reached and cleared with `v`.
-- In single-file mode, `J`/`K` keep skipping viewed files over `allFiles`.
+- In single-file mode, `J`/`K` retarget to the next/previous file over `allFiles` (no wrap,
+  same end-of-list notices), viewed or not.
 - `v` after marking stays on the file (see Round 4).
 - `j`/`k` are hunk's own line steps and are untouched.
 
