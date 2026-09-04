@@ -258,3 +258,31 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
   is over `allFiles`; a click records `pendingPath` and shows the notice
   `Enter loads <name>`.
 - Cost: each toggle and switch is a reload. Scroll starts at the top of the file.
+
+---
+
+# Round 3 — 2026-09-04
+
+## D. Full-file view
+
+- The extension registers a file view `hunk-viewed:full` titled `Full file`. `matches` is true for
+  every non-binary file. `layout` reads the new-side document (`readDocument("new")`) and the
+  old-side document (`readDocument("old")`, only when the patch has removed lines), parses
+  `file.patch` into hunks, and rebuilds a unified diff with unlimited context: every new-side
+  line in order; removed lines inserted at their hunk position in red (tone `removed`); added
+  lines green (tone `added`); unchanged lines plain. A gutter shows the new-side line number for
+  context and added lines and a blank for removed lines. Each row carries a `sourceRanges` entry
+  (new side for context/added, old side for removed). `hunkRows` spans each hunk's rows.
+- `layout` returns `null` (raw diff) when a needed document is unavailable, when the patch does
+  not parse, when the row count would exceed 10,000, or when the request is aborted.
+- Command `hunk-viewed.fullFile`, key `F`, title "Toggle full file": `ctx.fileViews.toggle("full")`
+  on the selected file. Toggling a folded viewed file switches it to the full view; `v` still
+  clears the mark and returns it to raw.
+
+## E. Navigation policy
+
+- Outside single-file mode, `J`/`K` select the next/previous **visible file, viewed or not**
+  (no wrap, notices at the ends), so a viewed file can be reached and cleared with `v`.
+- In single-file mode, `J`/`K` keep skipping viewed files over `allFiles`.
+- `v` after marking still jumps to the next unviewed file.
+- `j`/`k` are hunk's own line steps and are untouched.
