@@ -17,11 +17,14 @@ import type {
   ExtensionEventHandler,
   ExtensionEventName,
   ExtensionKeyboardMode,
+  ExtensionKeyboardModeContext,
+  ExtensionKeyEvent,
   HunkExtensionAPI,
 } from "hunkdiff/extension";
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
 import registerExtension from "./index";
 import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter } from "./src/reviewMirror";
+import { enterSingleFile, getSingleFileState, resetSingleFileForTests, setSingleFilePending } from "./src/singleFile";
 import { getViewedState, isViewed, resetViewedStoreForTests, toggleViewed as storeToggleViewed } from "./src/viewedStore";
 
 /** What the fake `hunk` object recorded during one factory call. */
@@ -33,6 +36,7 @@ interface FakeHunk {
   events: Map<ExtensionEventName, ExtensionEventHandler>;
   logs: string[];
   fileViews: unknown[];
+  transforms: Array<(changeset: ExtensionChangeset) => ExtensionChangeset>;
 }
 
 /** Build a minimal HunkExtensionAPI stub that records every registration call. */
@@ -43,6 +47,7 @@ function createFakeHunk(): FakeHunk {
   const events: FakeHunk["events"] = new Map();
   const logs: string[] = [];
   const fileViews: unknown[] = [];
+  const transforms: FakeHunk["transforms"] = [];
   const hunk = {
     apiVersion: HUNK_EXTENSION_API_VERSION,
     log: (message: string) => logs.push(message),
@@ -51,8 +56,9 @@ function createFakeHunk(): FakeHunk {
     registerKeyboardMode: (mode: ExtensionKeyboardMode) => keyboardModes.set(mode.id, mode),
     on: (event: ExtensionEventName, handler: ExtensionEventHandler) => events.set(event, handler),
     registerFileView: (view: unknown) => fileViews.push(view),
+    transformChangeset: (fn: (changeset: ExtensionChangeset) => ExtensionChangeset) => transforms.push(fn),
   } as unknown as HunkExtensionAPI;
-  return { hunk, panes, commands, keyboardModes, events, logs, fileViews };
+  return { hunk, panes, commands, keyboardModes, events, logs, fileViews, transforms };
 }
 
 function makeFile(id: string, path: string, extra: Partial<ExtensionDiffFile> = {}): ExtensionDiffFile {
@@ -75,15 +81,16 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
   } as unknown as ExtensionEventContext;
 }
 
-/** Calls a command handler made against `ctx.fileViews.select` and `ctx.commands.execute`. */
+/** Calls a command handler made against `ctx.fileViews.select`, `ctx.commands.execute`, and `ctx.keyboardModes`. */
 interface CommandCalls {
   fileViewSelects: Array<string | null>;
   executed: string[];
+  modeActive: boolean;
 }
 
 /** Build an empty `CommandCalls` recorder for a `commandContext`. */
 function createCalls(): CommandCalls {
-  return { fileViewSelects: [], executed: [] };
+  return { fileViewSelects: [], executed: [], modeActive: false };
 }
 
 function commandContext(
@@ -103,7 +110,30 @@ function commandContext(
         return true;
       },
     },
+    keyboardModes: {
+      isActive: () => calls.modeActive,
+      enterMode: () => {
+        calls.modeActive = true;
+        return true;
+      },
+      exitMode: () => {
+        calls.modeActive = false;
+        return true;
+      },
+    },
   } as unknown as ExtensionCommandContext;
+}
+
+/** Build a keyboard-mode context whose `commands.execute` records into `calls`. */
+function modeContext(calls: CommandCalls): ExtensionKeyboardModeContext {
+  return {
+    commands: {
+      execute: (id: string) => {
+        calls.executed.push(id);
+        return true;
+      },
+    },
+  } as unknown as ExtensionKeyboardModeContext;
 }
 
 let repoDir: string;
@@ -113,6 +143,7 @@ let originalXdgStateHome: string | undefined;
 beforeEach(() => {
   resetViewedStoreForTests();
   resetReviewMirrorForTests();
+  resetSingleFileForTests();
   repoDir = mkdtempSync(join(tmpdir(), "hunk-viewed-repo-"));
   stateDir = mkdtempSync(join(tmpdir(), "hunk-viewed-state-"));
   originalXdgStateHome = process.env.XDG_STATE_HOME;
@@ -144,8 +175,11 @@ describe("registration", () => {
     expect(fake.commands.get("nextUnviewed")?.command.key).toBe("J");
     expect(fake.commands.get("previousUnviewed")?.command.key).toBe("K");
     expect(fake.commands.get("clearRepo")?.command.key).toBeUndefined();
+    expect(fake.commands.get("foldViewed")?.command.key).toBeUndefined();
+    expect(fake.commands.get("singleFile")?.command.key).toBe("o");
 
-    expect(fake.keyboardModes.size).toBe(0);
+    expect(fake.keyboardModes.size).toBe(1);
+    expect(fake.keyboardModes.get("single")).toBeDefined();
   });
 });
 
@@ -297,5 +331,74 @@ describe("folded file view", () => {
     const notified: Array<[string, string | undefined]> = [];
     fake.commands.get("foldViewed")!.handler(commandContext(null, [], notified));
     expect(notified[0]?.[0]).toBe("No viewed files to fold");
+  });
+});
+
+describe("single-file mode", () => {
+  test("o toggles the mode; enter sets the target and refreshes; exit restores", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    fake.events.get("selection_changed")!({ fileId: "2", hunkIndex: null }, eventContext(repoDir));
+    const calls = createCalls();
+    const single = fake.commands.get("singleFile")!.handler;
+    single(commandContext(files[1]!, [], [], calls));
+    expect(calls.modeActive).toBe(true);
+    const mode = fake.keyboardModes.get("single")!;
+    mode.onEnter!(modeContext(calls));
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "b.ts", pendingPath: null });
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
+    single(commandContext(files[1]!, [], [], calls));
+    expect(calls.modeActive).toBe(false);
+    mode.onExit!(modeContext(calls));
+    expect(getSingleFileState().active).toBe(false);
+    expect(calls.executed).toEqual(["hunk.app.refresh", "hunk.app.refresh"]);
+  });
+
+  test("the transform records allFiles and keeps only the target while active", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    const transform = fake.transforms[0]!;
+    expect(transform(makeChangeset(files)).files.length).toBe(2);
+    expect(getReviewMirror().allFiles.length).toBe(2);
+    enterSingleFile("b.ts");
+    expect(transform(makeChangeset(files)).files.map((f) => f.id)).toEqual(["2"]);
+  });
+
+  test(", and . retarget with a refresh; enter loads the pending file; other keys pass", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    const mode = fake.keyboardModes.get("single")!;
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
+    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("a.ts");
+    setSingleFilePending("c.ts");
+    expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("c.ts");
+    expect(mode.onKey({ name: "v" } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
+    expect(calls.executed.filter((id) => id === "hunk.app.refresh").length).toBe(3);
+  });
+
+  test("J and K retarget over all files while the mode is active", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    loadChangeset(fake, [files[0]!]);
+    enterSingleFile("a.ts");
+    storeToggleViewed(files[1]!, new Date());
+    const calls = createCalls();
+    const selected: string[] = [];
+    fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected, [], calls));
+    expect(selected).toEqual([]);
+    expect(getSingleFileState().targetPath).toBe("c.ts");
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 });

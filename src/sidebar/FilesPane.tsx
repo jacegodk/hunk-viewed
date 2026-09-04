@@ -4,9 +4,12 @@
  * come from the extension stores. Adapted from hunk's bundled sidebar (MIT, Modem Labs Inc.)
  * without row windowing.
  */
+import { basename } from "node:path/posix";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { ExtensionPaneProps } from "hunkdiff/extension";
+import { useReviewMirror } from "../reviewMirror";
+import { setSingleFilePending, useSingleFileState } from "../singleFile";
 import { isViewed, useViewedState } from "../viewedStore";
 import { buildFlatSidebarEntries, buildTreeSidebarEntries, resolveFileSidebarMode, sidebarEntryStatsWidth } from "./entries";
 import { DirectoryRow, FileRow, GroupHeader, fileRowId } from "./rows";
@@ -16,20 +19,28 @@ import { padText } from "./text";
 export function FilesPane({ files, selectedFileId, theme, width, actions }: ExtensionPaneProps): ReactNode {
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const viewed = useViewedState();
+  const single = useSingleFileState();
+  const mirror = useReviewMirror();
+  // Single-file mode shows one file out of the full changeset; the host-filtered `files` prop
+  // only ever contains that one file while it is active, so list from the untransformed mirror.
+  const listFiles = single.active ? mirror.allFiles : files;
+  const highlightedId = single.active
+    ? (listFiles.find((file) => file.path === single.targetPath)?.id ?? null)
+    : selectedFileId;
   // One column of selection stripe plus one of row padding, as in the bundled pane.
   const textWidth = Math.max(8, width - 2);
   const mode = resolveFileSidebarMode(textWidth);
   const paddingLeft = mode === "tree" ? 0 : 1;
 
   const entries = useMemo(
-    () => (mode === "tree" ? buildTreeSidebarEntries(files) : buildFlatSidebarEntries(files)),
-    [files, mode],
+    () => (mode === "tree" ? buildTreeSidebarEntries(listFiles) : buildFlatSidebarEntries(listFiles)),
+    [listFiles, mode],
   );
   const viewedByFileId = useMemo(() => {
     const map = new Map<string, boolean>();
-    for (const file of files) map.set(file.id, isViewed(viewed, file));
+    for (const file of listFiles) map.set(file.id, isViewed(viewed, file));
     return map;
-  }, [files, viewed]);
+  }, [listFiles, viewed]);
   const viewedCount = useMemo(() => [...viewedByFileId.values()].filter(Boolean).length, [viewedByFileId]);
   const statsWidth = useMemo(
     () => entries.reduce((max, entry) => Math.max(max, entry.kind === "file" ? sidebarEntryStatsWidth(entry) : 0), 0),
@@ -37,11 +48,23 @@ export function FilesPane({ files, selectedFileId, theme, width, actions }: Exte
   );
 
   useEffect(() => {
-    if (!selectedFileId) return;
-    scrollRef.current?.scrollChildIntoView(fileRowId(selectedFileId));
-  }, [files, mode, selectedFileId]);
+    if (!highlightedId) return;
+    scrollRef.current?.scrollChildIntoView(fileRowId(highlightedId));
+  }, [listFiles, mode, highlightedId]);
 
-  const title = padText(` Files  ${viewedCount}/${files.length} viewed`, Math.max(1, width));
+  /** Route a row click: normal selection, or record a pending single-file target. */
+  const onSelectFile = (fileId: string) => {
+    if (!single.active) {
+      actions.selectFile(fileId);
+      return;
+    }
+    const file = listFiles.find((entry) => entry.id === fileId);
+    if (!file) return;
+    setSingleFilePending(file.path);
+    actions.notify(`Enter loads ${basename(file.path)}`, "info");
+  };
+
+  const title = padText(` Files  ${viewedCount}/${listFiles.length} viewed`, Math.max(1, width));
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column", backgroundColor: theme.panel }}>
@@ -78,11 +101,11 @@ export function FilesPane({ files, selectedFileId, theme, width, actions }: Exte
                 entry={entry}
                 viewed={viewedByFileId.get(entry.id) ?? false}
                 paddingLeft={paddingLeft}
-                selected={entry.id === selectedFileId}
+                selected={entry.id === highlightedId}
                 statsWidth={statsWidth}
                 textWidth={textWidth}
                 theme={theme}
-                onSelectFile={actions.selectFile}
+                onSelectFile={onSelectFile}
               />
             );
           })}
