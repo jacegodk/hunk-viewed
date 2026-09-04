@@ -182,3 +182,52 @@ with an empty record. Save errors show one warning notice and keep the in-memory
 Development: `hunk diff --extension ~/work/hunk-viewed`.
 Permanent: `hunk extension install ~/work/hunk-viewed`, or a symlink at
 `~/.config/hunk/extensions/hunk-viewed`.
+
+---
+
+# Round 2 — 2026-09-04
+
+Changes after the first smoke run. Everything above stays valid unless this section says otherwise.
+
+## A. Brighter check mark
+
+The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMuted`.
+
+## B. Folded viewed files (replaces the `F` files mode)
+
+- The extension registers a file view `hunk-viewed:viewed` titled `Viewed`. `matches(file)` is
+  "the file is viewed". `layout` returns one row, `✓ viewed  <n> hunks  +a -d` (check tone
+  `added`, rest `muted`), with every hunk mapped to row 0. A file with no hunks returns zero rows
+  and folds to its header alone.
+- `v` on an unviewed file: mark, `ctx.fileViews.select("viewed")` on the selected file, then jump
+  to the next unviewed file. `v` on a viewed file: clear the mark, `ctx.fileViews.select(null)`,
+  stay.
+- New menu command `hunk-viewed.foldViewed`, "Fold viewed files", no key: if the selected file
+  is not viewed, select the first viewed visible file; apply the view with `fileViews.select`;
+  run `hunk.view.applyFilePresentationToAllMatching`; reselect the original file. Notice when
+  no viewed file exists.
+- The `F` command and the `files` keyboard mode are removed. `filesModeActive` leaves the mirror.
+- Limits: the host header bar keeps its normal colors; folding is per runtime file id, so a
+  reload can unfold files until "Fold viewed files" runs again.
+
+## C. Single-file mode
+
+- New command `hunk-viewed.singleFile`, key `o`, title "Single-file mode". It toggles the
+  keyboard mode `hunk-viewed:single` ("Single file"): enter when inactive, exit when active.
+  `Esc` also exits (host owned).
+- State module `src/singleFile.ts`: `{ active: boolean; targetPath: string | null;
+  pendingPath: string | null }` with a subscribe hook. `reviewMirror` gains `allFiles`, the
+  full changeset the transform saw before dropping files.
+- `hunk.transformChangeset`: always records `allFiles`; when active with a target, returns the
+  changeset with only the file whose `path` equals the target. If the target is missing, it
+  returns the changeset unchanged.
+- Mode `onEnter`: target = selected file's path (or the first file), `active = true`, run
+  `hunk.app.refresh`. `onExit`: `active = false`, target and pending cleared, refresh.
+- Mode keys: `,` / `.` move the target to the previous / next file in `allFiles` (viewed or not)
+  and refresh; `enter` loads `pendingPath` if set; everything else passes.
+- In single mode, `J`, `K`, and `v` compute their target over `allFiles` and switch by setting
+  the target and refreshing instead of `selectFile`.
+- Pane in single mode: rows come from `allFiles`; the highlighted row is the target; the counter
+  is over `allFiles`; a click records `pendingPath` and shows the notice
+  `Enter loads <name>`.
+- Cost: each toggle and switch is a reload. Scroll starts at the top of the file.
