@@ -12,6 +12,7 @@ import { useReviewMirror } from "../reviewMirror";
 import { setSingleFilePending, useSingleFileState } from "../singleFile";
 import { isViewed, useViewedState } from "../viewedStore";
 import { buildFlatSidebarEntries, buildTreeSidebarEntries, resolveFileSidebarMode, sidebarEntryStatsWidth } from "./entries";
+import { resolvePaneSource } from "./paneSource";
 import { DirectoryRow, FileRow, GroupHeader, fileRowId } from "./rows";
 import { padText } from "./text";
 
@@ -23,10 +24,7 @@ export function FilesPane({ files, selectedFileId, theme, width, actions }: Exte
   const mirror = useReviewMirror();
   // Single-file mode shows one file out of the full changeset; the host-filtered `files` prop
   // only ever contains that one file while it is active, so list from the untransformed mirror.
-  const listFiles = single.active ? mirror.allFiles : files;
-  const highlightedId = single.active
-    ? (listFiles.find((file) => file.path === single.targetPath)?.id ?? null)
-    : selectedFileId;
+  const { listFiles, highlightedId } = resolvePaneSource(single, mirror.allFiles, files, selectedFileId);
   // One column of selection stripe plus one of row padding, as in the bundled pane.
   const textWidth = Math.max(8, width - 2);
   const mode = resolveFileSidebarMode(textWidth);
