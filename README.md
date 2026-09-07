@@ -1,80 +1,87 @@
 # hunk-viewed
 
-GitLab-style "viewed" marks for [hunk](https://hunk.dev). Mark a file as viewed, see the check
-mark in the files pane, skip viewed files while you review, and keep the marks between runs.
+GitLab-style "viewed" marks for [hunk](https://hunk.dev). Mark a file as viewed and fold it to one
+line, see the check mark in the files pane, review one file at a time, open the whole file, and
+keep the marks between runs.
+
+It is a plain hunk extension. It changes nothing in hunk itself and needs hunk 0.21 or newer
+(extension API 16).
 
 ## Install
 
 ```bash
-hunk extension install ~/work/hunk-viewed
-# or, while developing:
+hunk extension install jacegodk/hunk-viewed
+```
+
+hunk clones this repository into its managed extensions directory and loads it on every run.
+`hunk extension update hunk-viewed` pulls the latest commit, `hunk extension remove hunk-viewed`
+uninstalls it. To pin a release once tags exist: `hunk extension install jacegodk/hunk-viewed@v0.1.0`.
+
+To try a local checkout without installing, or while developing (uncommitted changes count here,
+not with `install`):
+
+```bash
 hunk diff --extension ~/work/hunk-viewed
 ```
 
-Requires hunk 0.21 or newer (extension API 16).
-
 ## Keys
 
-| Key   | Action                                                                    |
-| ----- | ------------------------------------------------------------------------- |
-| `v`   | Mark the selected file viewed and fold it, staying on it. On a viewed file: clear the mark and unfold it, staying on it. |
-| `F`   | Toggle full file: the whole file as a diff with unlimited context, side by side when hunk's layout is split, one column when stacked; `F` again returns to the normal diff |
-| `J`   | Next file.                                                                |
-| `K`   | Previous file.                                                            |
-| `o`   | Single-file mode: shows only the current file. Inside it `,`/`.` switch files, `Enter` loads a file clicked in the pane, `o` or `Esc` leaves and keeps that file selected. In single-file mode `J`/`K` switch the shown file instead of moving the selection; `v` marks/folds or clears/unfolds the shown file in place. |
+| Key | Command id | Action |
+| --- | --- | --- |
+| `v` | `hunk-viewed.toggleViewed` | Mark the selected file viewed and fold it to one line. On a viewed file: clear the mark and unfold. The selection stays on the file. |
+| `J` | `hunk-viewed.nextUnviewed` | Next file. |
+| `K` | `hunk-viewed.previousUnviewed` | Previous file. |
+| `F` | `hunk-viewed.fullFile` | Toggle the full file: every line, with the diff marked in place. Side by side when hunk's layout is split, one column when stacked. |
+| `o` | `hunk-viewed.singleFile` | Toggle single-file mode: the review shows only the current file, the pane still lists all files. |
 
-**Extensions → Fold viewed files** folds every viewed file to one line. It needs a viewed file already selected; run `v` on the file first if it is not marked yet.
+Inside single-file mode: `,` and `.` show the previous or next file, `J` and `K` do the same,
+`v` folds or unfolds the shown file, a click in the pane picks a file and `Enter` shows it,
+`o` or `Esc` leaves and puts the file you were on at the top of the review.
 
-`v` folds and unfolds the file it marks, in and out of single-file mode.
+Menu-only commands, in **Extensions**:
 
-**Extensions → Clear viewed marks for this repo** removes every mark for the current repo.
+| Command id | Action |
+| --- | --- |
+| `hunk-viewed.foldViewed` | Fold every viewed file. Select a viewed file first; hunk applies the fold from there to all matching files. |
+| `hunk-viewed.clearRepo` | Remove every mark for this repo, after a confirmation. |
 
-Rebind in `~/.config/hunk/config.toml`:
+The ids `nextUnviewed` and `previousUnviewed` are historical; they move to the next and
+previous file and never skip viewed files. Rebind any command in `~/.config/hunk/config.toml`:
 
 ```toml
 [keybindings]
 "hunk-viewed.toggleViewed" = "v"
-"hunk-viewed.fullFile" = "F"
 "hunk-viewed.nextUnviewed" = "J"
 "hunk-viewed.previousUnviewed" = "K"
+"hunk-viewed.fullFile" = "F"
 "hunk-viewed.singleFile" = "o"
+"hunk-viewed.foldViewed" = "ctrl+f"
 ```
-
-`nextUnviewed`/`previousUnviewed` kept their command ids from round 1; they now move next/previous file everywhere, not next/previous unviewed file.
 
 ## How marks work
 
-- A mark is stored per repo (the canonical working directory hunk runs in) and per file path,
-  together with a sha256 of the file's patch. When the patch changes, the file is unviewed again.
+- A mark is stored per repo (the directory hunk runs in) and per file path, together with a
+  sha256 of the file's patch. When the patch changes, the file is unviewed again.
 - Marks live in `$XDG_STATE_HOME/hunk/viewed.json`, default `~/.local/state/hunk/viewed.json`
   (`%LOCALAPPDATA%\hunk\viewed.json` on Windows). Marks older than 30 days are dropped.
-- Viewed files stay in the review stream and in the pane; `J`/`K` never skip them.
+- Viewed files stay in the review stream and in the pane. Nothing skips them.
 
 ## Known limitations
 
-- The pane's `n/m viewed` counter counts the files the pane shows. With a filter active, it is
-  progress within the filter, not the whole changeset.
-- The extension mirrors hunk's filter from events. After a hard reload with a filter active, the
-  mirror can lag until the filter is edited again. When that happens, `J`/`K` fall back to the
-  full file list if the selected file is not in the mirrored view.
-- `hunk extension install <path>` clones the path's committed HEAD. Uncommitted work is not
-  installed. Use `--extension <path>` while developing.
-- Folding is per loaded file, so after a reload run Fold viewed files again. The header bar of a folded file keeps its normal colors. Single-file mode reloads the review on every switch and starts at the top of the file.
-- Single-file mode needs a reloadable input (not a piped patch).
-- The full-file view needs a readable source (not a piped patch) and falls back to the normal
-  diff over 10,000 rows or when the file changed since the diff was taken.
-- The full-file view has no syntax highlighting (the extension API only exposes semantic tones).
-- The full-file view does not follow you across single-file mode switches; press F again.
-- The full-file view's side-by-side columns follow hunk's own split/stack layout. Hunk re-lays
-  out the view automatically on a width change, but a pure layout-mode switch (`1`/`2`/`0`) may
-  not re-render it; press `F` twice to force it. Until hunk reports a layout change for the
-  session (`layout_changed` fires only on a change after startup, not on the initial resolution),
-  the extension falls back to a width heuristic; this is the steady state for most sessions, not
-  just a brief startup window. Between the mode switch and the next `F` press, an already-open
-  full-file view can show one file split and another stacked.
-- Split columns fit long lines to the column width and truncate with `…`; the single-column view
-  never truncates.
-- Single-file mode ignores the filter: `,`/`.` can land on a filtered-out file, which shows an empty review until you move on.
+- Folding is per loaded file. After a reload, run **Fold viewed files** again. The header bar of
+  a folded file keeps hunk's normal colors.
+- The pane counter counts the files the pane shows. With a filter active, it is progress within
+  the filter.
+- Single-file mode reloads the review on every switch, needs a reloadable input (not a piped
+  patch), ignores hunk's filter, and does not carry an open full-file view across switches.
+- The full-file view needs a readable source (not a piped patch). It falls back to the normal
+  diff over 10,000 rows or when the file changed since the diff was taken. It has no syntax
+  highlighting, because the extension API only exposes semantic colors. Side-by-side columns cut
+  long lines with `…`.
+- hunk announces its split/stack layout to extensions only when it changes. Until then the
+  full-file view guesses split when the review body is at least 116 columns wide, which matches
+  hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,
+  press `F` twice on an open full-file view to re-render it.
 
 ## Development
 
