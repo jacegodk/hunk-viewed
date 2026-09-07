@@ -1,6 +1,6 @@
 {
   "name": "hunk-viewed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mark files as viewed in hunk, GitLab style: check marks in the files pane, skip viewed files, marks persist between runs.",
   "license": "MIT",
   "private": true,
