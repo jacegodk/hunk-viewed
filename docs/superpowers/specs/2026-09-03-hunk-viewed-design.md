@@ -306,3 +306,7 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 # Round 4 — 2026-09-04
 
 `v` no longer moves the selection.
+
+## 2026-09-07
+
+`N` selects the next unviewed file (retargets in single-file mode); `J`/`K` unchanged.

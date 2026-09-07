@@ -4,7 +4,8 @@
  * `v` marks the selected file, folds it, and stays selected; on a viewed file it clears the
  * mark, unfolds it, and stays. `F` toggles the full-file view: the whole file as a diff with
  * unlimited context. `J` / `K` move to the next/previous file, walking every visible file in
- * every mode; viewed files are never skipped. `o` toggles single-file mode, which shows only
+ * every mode; viewed files are never skipped. `N` jumps to the next unviewed file, retargeting
+ * instead of selecting while single-file mode is active. `o` toggles single-file mode, which shows only
  * one file at a time; inside it `,`/`.` retarget the previous/next file and `Enter` loads a file
  * clicked in the pane, with `J`/`K` retargeting instead of jumping the full review. Marks
  * persist per repo in the XDG state dir and reset when a file's patch changes. The pane replaces
@@ -251,27 +252,47 @@ export default function (hunk: HunkExtensionAPI) {
   });
 
   /**
-   * Move to the neighboring file: any visible file, viewed or not, both outside and inside
-   * single mode. Shared by `nextUnviewed` and `previousUnviewed`, which only differ in direction.
+   * Move to the nearest file matching `isViewedFile`'s complement, both outside and inside
+   * single mode: outside, search the visible files around the selection and select the hit;
+   * inside single mode, search `allFiles` around the current target and retarget onto the hit.
+   * `message` builds the end-of-search notice for the direction searched. Shared by `jumpFile`
+   * (never skips, so `isViewedFile` always returns false) and `skipToUnviewed` (skips viewed
+   * files, forward only).
    */
-  function jumpFile(ctx: ExtensionCommandContext, direction: 1 | -1) {
+  function jumpTo(
+    ctx: ExtensionCommandContext,
+    direction: 1 | -1,
+    isViewedFile: (file: ExtensionDiffFile) => boolean,
+    message: (direction: 1 | -1) => string,
+  ) {
     const single = getSingleFileState();
     if (single.active) {
-      const next = neighborPath(getReviewMirror().allFiles, single.targetPath, direction);
-      if (next) retarget(next, (id) => ctx.commands.execute(id), ctx.notify);
-      else ctx.notify(direction === 1 ? "No file after this one" : "No file before this one", "info");
+      const files = getReviewMirror().allFiles;
+      const targetId = single.targetPath === null ? null : (files.find((file) => file.path === single.targetPath)?.id ?? null);
+      const next = findUnviewedNeighbor(files, targetId, direction, isViewedFile);
+      if (next) retarget(next.path, (id) => ctx.commands.execute(id), ctx.notify);
+      else ctx.notify(message(direction), "info");
       return;
     }
     const selectedFileId = ctx.selection.file?.id ?? null;
-    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, direction, () => false);
+    const next = findUnviewedNeighbor(navigationFiles(selectedFileId), selectedFileId, direction, isViewedFile);
     if (next) ctx.navigation.selectFile(next.id);
-    else ctx.notify(direction === 1 ? "No file after this one" : "No file before this one", "info");
+    else ctx.notify(message(direction), "info");
+  }
+
+  /** Move to the neighboring file: any visible file, viewed or not. Shared by `nextUnviewed`/`previousUnviewed`. */
+  function jumpFile(ctx: ExtensionCommandContext, direction: 1 | -1) {
+    jumpTo(ctx, direction, () => false, (d) => (d === 1 ? "No file after this one" : "No file before this one"));
   }
 
   hunk.registerCommand({ id: "nextUnviewed", title: "Next file", key: "J" }, (ctx) => jumpFile(ctx, 1));
 
   hunk.registerCommand({ id: "previousUnviewed", title: "Previous file", key: "K" }, (ctx) =>
     jumpFile(ctx, -1),
+  );
+
+  hunk.registerCommand({ id: "skipToUnviewed", title: "Next unviewed file", key: "N" }, (ctx) =>
+    jumpTo(ctx, 1, (file) => isViewed(getViewedState(), file), () => "No unviewed file after this one"),
   );
 
   hunk.registerCommand({ id: "clearRepo", title: "Clear viewed marks for this repo" }, async (ctx) => {

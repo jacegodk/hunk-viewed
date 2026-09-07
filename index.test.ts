@@ -197,6 +197,7 @@ describe("registration", () => {
     expect(fake.commands.get("toggleViewed")?.command.key).toBe("v");
     expect(fake.commands.get("nextUnviewed")?.command.key).toBe("J");
     expect(fake.commands.get("previousUnviewed")?.command.key).toBe("K");
+    expect(fake.commands.get("skipToUnviewed")?.command.key).toBe("N");
     expect(fake.commands.get("clearRepo")?.command.key).toBeUndefined();
     expect(fake.commands.get("foldViewed")?.command.key).toBeUndefined();
     expect(fake.commands.get("singleFile")?.command.key).toBe("o");
@@ -288,6 +289,56 @@ describe("nextUnviewed / previousUnviewed", () => {
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[0]!, selected));
 
     expect(selected).toEqual(["2"]);
+  });
+});
+
+describe("skipToUnviewed", () => {
+  test("N selects the next unviewed file after the selection, skipping viewed ones", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[1]!, new Date());
+
+    const selected: string[] = [];
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("skipToUnviewed")!.handler(commandContext(files[0]!, selected, notified));
+
+    expect(selected).toEqual(["3"]);
+    expect(notified).toEqual([]);
+  });
+
+  test("notifies when no unviewed file follows the selection, without selecting", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[1]!, new Date());
+
+    const selected: string[] = [];
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("skipToUnviewed")!.handler(commandContext(files[2]!, selected, notified));
+
+    expect(selected).toEqual([]);
+    expect(notified).toEqual([["No unviewed file after this one", "info"]]);
+  });
+
+  test("in single-file mode, retargets to the next unviewed file and refreshes, without selecting", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    loadChangeset(fake, [files[0]!]);
+    enterSingleFile("a.ts");
+    storeToggleViewed(files[1]!, new Date());
+
+    const calls = createCalls();
+    const selected: string[] = [];
+    fake.commands.get("skipToUnviewed")!.handler(commandContext(files[0]!, selected, [], calls));
+
+    expect(selected).toEqual([]);
+    expect(getSingleFileState().targetPath).toBe("c.ts");
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
   });
 });
 

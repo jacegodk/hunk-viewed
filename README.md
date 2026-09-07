@@ -31,6 +31,7 @@ hunk diff --extension ~/work/hunk-viewed
 | `v` | `hunk-viewed.toggleViewed` | Mark the selected file viewed and fold it to one line. On a viewed file: clear the mark and unfold. The selection stays on the file. |
 | `J` | `hunk-viewed.nextUnviewed` | Next file. |
 | `K` | `hunk-viewed.previousUnviewed` | Previous file. |
+| `N` | `hunk-viewed.skipToUnviewed` | Next unviewed file. Skips viewed files; `J`/`K` do not. |
 | `F` | `hunk-viewed.fullFile` | Toggle the full file: every line, with the diff marked in place. Side by side when hunk's layout is split, one column when stacked. |
 | `o` | `hunk-viewed.singleFile` | Toggle single-file mode: the review shows only the current file, the pane still lists all files. |
 
@@ -53,6 +54,7 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
 "hunk-viewed.toggleViewed" = "v"
 "hunk-viewed.nextUnviewed" = "J"
 "hunk-viewed.previousUnviewed" = "K"
+"hunk-viewed.skipToUnviewed" = "N"
 "hunk-viewed.fullFile" = "F"
 "hunk-viewed.singleFile" = "o"
 "hunk-viewed.foldViewed" = "ctrl+f"
