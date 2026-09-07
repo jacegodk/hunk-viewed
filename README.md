@@ -34,9 +34,9 @@ hunk diff --extension ~/work/hunk-viewed
 | `F` | `hunk-viewed.fullFile` | Toggle the full file: every line, with the diff marked in place. Side by side when hunk's layout is split, one column when stacked. |
 | `o` | `hunk-viewed.singleFile` | Toggle single-file mode: the review shows only the current file, the pane still lists all files. |
 
-Inside single-file mode: `,` and `.` show the previous or next file, `J` and `K` do the same,
-`v` folds or unfolds the shown file, a click in the pane picks a file and `Enter` shows it,
-`o` or `Esc` leaves and puts the file you were on at the top of the review.
+Inside single-file mode: `J` and `K` show the previous or next file, `v` folds or unfolds the
+shown file, a click in the pane picks a file and `Enter` shows it, `o` or `Esc` leaves and puts
+the file you were on at the top of the review.
 
 Menu-only commands, in **Extensions**:
 
@@ -73,7 +73,8 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
 - The pane counter counts the files the pane shows. With a filter active, it is progress within
   the filter.
 - Single-file mode reloads the review on every switch, needs a reloadable input (not a piped
-  patch), ignores hunk's filter, and does not carry an open full-file view across switches.
+  patch). `J`/`K` switch files; the filter is ignored for switching. Does not carry an open full-file
+  view across switches.
 - The full-file view needs a readable source (not a piped patch). It falls back to the normal
   diff over 10,000 rows or when the file changed since the diff was taken. It has no syntax
   highlighting, because the extension API only exposes semantic colors. Side-by-side columns cut
