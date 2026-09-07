@@ -530,7 +530,7 @@ describe("single-file mode", () => {
     expect(getReviewMirror().allFiles[0]?.metadata).toEqual({});
   });
 
-  test("enter loads the pending file; , and . pass through; other keys pass", () => {
+  test(", and . retarget with a refresh; enter loads the pending file; other keys pass", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts"), makeFile("3", "c.ts")];
@@ -538,18 +538,18 @@ describe("single-file mode", () => {
     enterSingleFile("a.ts");
     const calls = createCalls();
     const mode = fake.keyboardModes.get("single")!;
-    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
-    expect(getSingleFileState().targetPath).toBe("a.ts");
-    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
+    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
     expect(getSingleFileState().targetPath).toBe("a.ts");
     setSingleFilePending("c.ts");
     expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
     expect(getSingleFileState().targetPath).toBe("c.ts");
     expect(mode.onKey({ name: "v" } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
-    expect(calls.executed.filter((id) => id === "hunk.app.refresh").length).toBe(1);
+    expect(calls.executed.filter((id) => id === "hunk.app.refresh").length).toBe(3);
   });
 
-  test("enter passes through with nothing pending; , and . pass through", () => {
+  test("enter passes through with nothing pending; , and . notify at the ends", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
@@ -559,12 +559,27 @@ describe("single-file mode", () => {
     const mode = fake.keyboardModes.get("single")!;
     let notified: Array<[string, string | undefined]> = [];
     expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("pass");
-    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("pass");
-    expect(notified).toEqual([]);
+    expect(mode.onKey({ name: "," } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(notified).toEqual([["No file before this one", "info"]]);
     enterSingleFile("b.ts");
     notified = [];
-    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("pass");
-    expect(notified).toEqual([]);
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(notified).toEqual([["No file after this one", "info"]]);
+  });
+
+  test("retarget warns when the reload fails", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    fake.transforms[0]!(makeChangeset(files));
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    calls.executeResult = false;
+    const notified: Array<[string, string | undefined]> = [];
+    const mode = fake.keyboardModes.get("single")!;
+    expect(mode.onKey({ name: "." } as ExtensionKeyEvent, modeContext(calls, notified))).toBe("handled");
+    expect(getSingleFileState().targetPath).toBe("b.ts");
+    expect(notified).toEqual([["This input cannot be reloaded, so single-file mode is unavailable", "warning"]]);
   });
 
   test("J retargets to the very next file in single-file mode without skipping viewed ones", () => {

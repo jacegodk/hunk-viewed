@@ -5,9 +5,10 @@
  * mark, unfolds it, and stays. `F` toggles the full-file view: the whole file as a diff with
  * unlimited context. `J` / `K` move to the next/previous file, walking every visible file in
  * every mode; viewed files are never skipped. `o` toggles single-file mode, which shows only
- * one file at a time; inside it `J`/`K` retarget to the previous/next file and `Enter` loads a
- * file clicked in the pane. Marks persist per repo in the XDG state dir and reset when a file's
- * patch changes. The pane replaces hunk's files pane and shows marks and progress.
+ * one file at a time; inside it `,`/`.` retarget the previous/next file and `Enter` loads a file
+ * clicked in the pane, with `J`/`K` retargeting instead of jumping the full review. Marks
+ * persist per repo in the XDG state dir and reset when a file's patch changes. The pane replaces
+ * hunk's files pane and shows marks and progress.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -320,7 +321,15 @@ export default function (hunk: HunkExtensionAPI) {
       ctx.commands.execute("hunk.app.refresh");
     },
     onKey(key: ExtensionKeyEvent, ctx) {
-      const { pendingPath } = getSingleFileState();
+      const { targetPath, pendingPath } = getSingleFileState();
+      const files = getReviewMirror().allFiles;
+      if (matchesKey(".", key) || matchesKey(",", key)) {
+        const direction = matchesKey(".", key) ? 1 : -1;
+        const next = neighborPath(files, targetPath, direction);
+        if (next) retarget(next, (id) => ctx.commands.execute(id), ctx.notify);
+        else ctx.notify(direction === 1 ? "No file after this one" : "No file before this one", "info");
+        return "handled";
+      }
       if (matchesKey("enter", key)) {
         if (!pendingPath) return "pass";
         retarget(pendingPath, (id) => ctx.commands.execute(id), ctx.notify);

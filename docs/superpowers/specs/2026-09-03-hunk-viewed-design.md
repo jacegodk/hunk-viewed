@@ -244,8 +244,10 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
   that cache when it records `allFiles`.
 - Mode `onEnter` only runs `hunk.app.refresh` — the target is already set by the `singleFile`
   command. `onExit`: `active = false`, target and pending cleared, refresh.
-- Mode keys: `J`/`K` switch files (commands), `enter` loads the pending file, everything else
-  passes. Every retarget that reloads (`enter` and `J`/`K`) warns
+- Mode keys: `,` / `.` move the target to the previous / next file in `allFiles` (viewed or not)
+  and refresh, or notify ("No file before/after this one") at either end; `enter` loads
+  `pendingPath` and refreshes if set, otherwise passes through untouched; everything else passes.
+  Every retarget that reloads (`,`/`.`, `enter`, and `J`/`K` below) warns
   "This input cannot be reloaded, so single-file mode is unavailable" if the refresh command
   itself returns `false`.
 - In single mode, `J` and `K` compute their target over `allFiles` and switch by setting the
