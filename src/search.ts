@@ -77,9 +77,13 @@ export function findLineHits(text: string, query: string): Array<readonly [numbe
   return hits;
 }
 
-/** Two hits are the same pick target when file, side, line, and range all match. */
-function sameHit(a: SearchHit, b: SearchHit): boolean {
-  return a.fileId === b.fileId && a.side === b.side && a.line === b.line && a.range[0] === b.range[0] && a.range[1] === b.range[1];
+/**
+ * Two hits are the same pick target when path, side, line, and range all match.
+ * Compares `filePath` rather than `fileId`: hunk renumbers file ids on reload, so an id-based
+ * compare would lose the pinned hit across every reload even though the same line still matches.
+ */
+export function sameHit(a: SearchHit, b: SearchHit): boolean {
+  return a.filePath === b.filePath && a.side === b.side && a.line === b.line && a.range[0] === b.range[0] && a.range[1] === b.range[1];
 }
 
 /**

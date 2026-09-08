@@ -19,11 +19,13 @@ import type {
   ExtensionKeyboardMode,
   ExtensionKeyboardModeContext,
   ExtensionKeyEvent,
+  ExtensionLineHighlighter,
   HunkExtensionAPI,
 } from "hunkdiff/extension";
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
 import registerExtension from "./index";
-import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter } from "./src/reviewMirror";
+import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter, visibleFiles } from "./src/reviewMirror";
+import { getSearchState, rebuildHits, resetSearchForTests, setQuery, stepHit, toggleFullViewFile } from "./src/search";
 import { enterSingleFile, getSingleFileState, resetSingleFileForTests, setSingleFilePending } from "./src/singleFile";
 import { getViewedState, isViewed, resetViewedStoreForTests, toggleViewed as storeToggleViewed } from "./src/viewedStore";
 
@@ -37,6 +39,7 @@ interface FakeHunk {
   logs: string[];
   fileViews: unknown[];
   transforms: Array<(changeset: ExtensionChangeset) => ExtensionChangeset>;
+  lineHighlighters: Map<string, ExtensionLineHighlighter>;
 }
 
 /** Build a minimal HunkExtensionAPI stub that records every registration call. */
@@ -48,6 +51,7 @@ function createFakeHunk(): FakeHunk {
   const logs: string[] = [];
   const fileViews: unknown[] = [];
   const transforms: FakeHunk["transforms"] = [];
+  const lineHighlighters: FakeHunk["lineHighlighters"] = new Map();
   const hunk = {
     apiVersion: HUNK_EXTENSION_API_VERSION,
     log: (message: string) => logs.push(message),
@@ -56,9 +60,10 @@ function createFakeHunk(): FakeHunk {
     registerKeyboardMode: (mode: ExtensionKeyboardMode) => keyboardModes.set(mode.id, mode),
     on: (event: ExtensionEventName, handler: ExtensionEventHandler) => events.set(event, handler),
     registerFileView: (view: unknown) => fileViews.push(view),
+    registerLineHighlighter: (highlighter: ExtensionLineHighlighter) => lineHighlighters.set(highlighter.id, highlighter),
     transformChangeset: (fn: (changeset: ExtensionChangeset) => ExtensionChangeset) => transforms.push(fn),
   } as unknown as HunkExtensionAPI;
-  return { hunk, panes, commands, keyboardModes, events, logs, fileViews, transforms };
+  return { hunk, panes, commands, keyboardModes, events, logs, fileViews, transforms, lineHighlighters };
 }
 
 function makeFile(id: string, path: string, extra: Partial<ExtensionDiffFile> = {}): ExtensionDiffFile {
@@ -82,7 +87,7 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
   } as unknown as ExtensionEventContext;
 }
 
-/** Calls a command handler made against `ctx.fileViews`, `ctx.commands`, and `ctx.keyboardModes`. */
+/** Calls a command handler made against `ctx.fileViews`, `ctx.commands`, `ctx.keyboardModes`, `ctx.panes`, `ctx.highlights`, and `ctx.navigation`. */
 interface CommandCalls {
   fileViewSelects: Array<string | null>;
   fileViewRefreshes: string[];
@@ -96,11 +101,29 @@ interface CommandCalls {
   isEnabledResults: boolean[];
   /** Value `commands.execute` returns; defaults to true (the command ran). */
   executeResult: boolean;
+  paneOpens: string[];
+  paneCloses: string[];
+  highlightRefreshes: string[];
+  enteredModes: string[];
+  revealed: Array<{ fileId: string; side: string; line: number }>;
 }
 
 /** Build an empty `CommandCalls` recorder for a `commandContext`. */
 function createCalls(): CommandCalls {
-  return { fileViewSelects: [], fileViewRefreshes: [], fileViewToggles: [], executed: [], modeActive: false, isEnabledResults: [true], executeResult: true };
+  return {
+    fileViewSelects: [],
+    fileViewRefreshes: [],
+    fileViewToggles: [],
+    executed: [],
+    modeActive: false,
+    isEnabledResults: [true],
+    executeResult: true,
+    paneOpens: [],
+    paneCloses: [],
+    highlightRefreshes: [],
+    enteredModes: [],
+    revealed: [],
+  };
 }
 
 /** Consume one queued `isEnabled` result, repeating the last entry once the queue is down to one. */
@@ -117,7 +140,10 @@ function commandContext(
 ): ExtensionCommandContext {
   return {
     selection: { file: selectedFile, hunkIndex: null, currentLine: null },
-    navigation: { selectFile: (id: string) => selectedIds.push(id) },
+    navigation: {
+      selectFile: (id: string) => selectedIds.push(id),
+      revealLine: (fileId: string, side: string, line: number) => calls.revealed.push({ fileId, side, line }),
+    },
     notify: (message: string, type?: string) => notified.push([message, type]),
     fileViews: {
       select: (id: string | null) => calls.fileViewSelects.push(id),
@@ -133,14 +159,24 @@ function commandContext(
     },
     keyboardModes: {
       isActive: () => calls.modeActive,
-      enterMode: () => {
+      enterMode: (id: string) => {
         calls.modeActive = true;
+        calls.enteredModes.push(id);
         return true;
       },
       exitMode: () => {
         calls.modeActive = false;
         return true;
       },
+    },
+    panes: {
+      open: (id: string) => calls.paneOpens.push(id),
+      close: (id: string) => calls.paneCloses.push(id),
+      toggle: () => {},
+      isOpen: () => false,
+    },
+    highlights: {
+      refresh: (id: string) => calls.highlightRefreshes.push(id),
     },
   } as unknown as ExtensionCommandContext;
 }
@@ -167,6 +203,7 @@ beforeEach(() => {
   resetViewedStoreForTests();
   resetReviewMirrorForTests();
   resetSingleFileForTests();
+  resetSearchForTests();
   repoDir = mkdtempSync(join(tmpdir(), "hunk-viewed-repo-"));
   stateDir = mkdtempSync(join(tmpdir(), "hunk-viewed-state-"));
   originalXdgStateHome = process.env.XDG_STATE_HOME;
@@ -203,9 +240,17 @@ describe("registration", () => {
     expect(fake.commands.get("clearRepo")?.command.key).toBeUndefined();
     expect(fake.commands.get("foldViewed")?.command.key).toBeUndefined();
     expect(fake.commands.get("singleFile")?.command.key).toBe("o");
+    expect(fake.commands.get("search")?.command.key).toEqual(["ctrl+f", "f3"]);
+    expect(fake.commands.get("searchNext")?.command.key).toBe("n");
+    expect(fake.commands.get("searchPrevious")?.command.key).toEqual(["p", "shift+f3", "ctrl+shift+f"]);
+    expect(fake.commands.get("searchEdit")?.command.key).toBeUndefined();
+    expect(fake.commands.get("searchClear")?.command.key).toBeUndefined();
 
-    expect(fake.keyboardModes.size).toBe(1);
+    expect(fake.keyboardModes.size).toBe(2);
     expect(fake.keyboardModes.get("single")).toBeDefined();
+    expect(fake.keyboardModes.get("search-prompt")).toBeDefined();
+
+    expect(fake.lineHighlighters.get("search")).toBeDefined();
   });
 });
 
@@ -768,5 +813,200 @@ describe("J/K policy", () => {
     const notified: Array<[string, string | undefined]> = [];
     fake.commands.get("nextUnviewed")!.handler(commandContext(files[2]!, [], notified, createCalls()));
     expect(notified[0]?.[0]).toBe("No file after this one");
+  });
+});
+
+describe("search", () => {
+  test("search with no active query opens the prompt, and Enter submits and runs it", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [
+      makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n-x\n+foo bar\n" }),
+      makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n x\n+another foo\n" }),
+    ];
+    loadChangeset(fake, files);
+
+    const calls = createCalls();
+    const pending = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    expect(calls.paneOpens).toEqual(["search"]);
+    expect(calls.enteredModes).toEqual(["search-prompt"]);
+    expect(getSearchState().prompt).toEqual({ open: true, draft: "" });
+
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    expect(mode.onKey({ sequence: "f" }, modeContext(calls))).toBe("handled");
+    expect(mode.onKey({ sequence: "o" }, modeContext(calls))).toBe("handled");
+    expect(mode.onKey({ sequence: "o" }, modeContext(calls))).toBe("handled");
+    expect(getSearchState().prompt.draft).toBe("foo");
+    expect(mode.onKey({ name: "enter" }, modeContext(calls))).toBe("exit");
+
+    await pending;
+
+    expect(getSearchState().query).toBe("foo");
+    expect(getSearchState().hits).toHaveLength(2);
+    expect(calls.highlightRefreshes).toEqual(["search"]);
+    expect(calls.fileViewRefreshes).toEqual(["full"]);
+    expect(calls.revealed).toEqual([{ fileId: "1", side: "new", line: 1 }]);
+  });
+
+  test("backspace edits the draft", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    void fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    mode.onKey({ sequence: "f" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    expect(mode.onKey({ name: "backspace" }, modeContext(calls))).toBe("handled");
+    expect(getSearchState().prompt.draft).toBe("f");
+  });
+
+  test("a ctrl/meta chord or a multi-character sequence is swallowed, not appended", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    void fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    expect(mode.onKey({ sequence: "c", ctrl: true }, modeContext(calls))).toBe("handled");
+    expect(mode.onKey({ sequence: "{" }, modeContext(calls))).toBe("handled");
+    expect(mode.onKey({ name: "up" }, modeContext(calls))).toBe("handled");
+    expect(getSearchState().prompt.draft).toBe("{");
+  });
+
+  test("Esc cancels the prompt: onExit resolves null, no query, and the pane closes when none was active", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    const pending = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    mode.onExit!(modeContext(calls));
+
+    await pending;
+
+    expect(getSearchState().query).toBe("");
+    expect(getSearchState().prompt.open).toBe(false);
+    expect(calls.paneCloses).toEqual(["search"]);
+  });
+
+  test("search with an active query advances to the next hit and reveals it", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,2 +1,2 @@\n foo one\n foo two\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    expect(getSearchState().currentIndex).toBe(0);
+
+    const calls = createCalls();
+    fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+
+    expect(getSearchState().currentIndex).toBe(1);
+    expect(calls.revealed).toEqual([{ fileId: "1", side: "new", line: 2 }]);
+    expect(calls.paneOpens).toEqual([]);
+    expect(calls.enteredModes).toEqual([]);
+  });
+
+  test("searchPrevious wraps to the last hit with a notice", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,2 +1,2 @@\n foo one\n foo two\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("searchPrevious")!.handler(commandContext(files[0]!, [], notified, createCalls()));
+
+    expect(getSearchState().currentIndex).toBe(1);
+    expect(notified).toEqual([["Wrapped to the last hit", "info"]]);
+  });
+
+  test("searchNext notifies when there are no hits", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n nomatch\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const notified: Array<[string, string | undefined]> = [];
+    fake.commands.get("searchNext")!.handler(commandContext(files[0]!, [], notified, createCalls()));
+
+    expect(notified).toEqual([["No hits", "info"]]);
+  });
+
+  test("searchClear applies clear and closes the pane", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const calls = createCalls();
+    fake.commands.get("searchClear")!.handler(commandContext(files[0]!, [], [], calls));
+
+    expect(getSearchState().query).toBe("");
+    expect(calls.paneCloses).toEqual(["search"]);
+    expect(calls.highlightRefreshes).toEqual(["search"]);
+    expect(calls.fileViewRefreshes).toEqual(["full"]);
+  });
+
+  test("searchEdit reopens the prompt prefilled with the current query", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const calls = createCalls();
+    void fake.commands.get("searchEdit")!.handler(commandContext(files[0]!, [], [], calls));
+
+    expect(getSearchState().prompt).toEqual({ open: true, draft: "foo" });
+    expect(calls.paneOpens).toEqual(["search"]);
+    // Editing does not touch the query itself until submitted; that stays the driver of the
+    // "search with an active query moves to the next hit" branch of the `search` command.
+    expect(getSearchState().query).toBe("foo");
+  });
+
+  test("the search highlighter marks match/current per patch line, and skips a full-view file", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,2 +1,2 @@\n foo one\n foo two\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const highlighter = fake.lineHighlighters.get("search")!;
+    const input = { file: files[0]!, signal: new AbortController().signal, readDocument: async () => null };
+    expect(highlighter.highlight(input)).toEqual([
+      { side: "new", line: 1, range: [0, 3], tone: "current" },
+      { side: "new", line: 2, range: [0, 3], tone: "match" },
+    ]);
+
+    toggleFullViewFile("1");
+    expect(highlighter.highlight(input)).toEqual([]);
+  });
+
+  test("filter_changed drops the hidden file's hits and clamps the current index", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }), makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    stepHit(1);
+    expect(getSearchState().currentIndex).toBe(1);
+
+    fake.events.get("filter_changed")!({ filter: "a.ts" }, eventContext(repoDir));
+
+    expect(getSearchState().hits).toHaveLength(1);
+    expect(getSearchState().currentIndex).toBe(0);
   });
 });

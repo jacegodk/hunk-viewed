@@ -1,5 +1,6 @@
 import type { ExtensionFileViewLayout, ExtensionFileViewRow, ExtensionFileViewSpan } from "hunkdiff/extension";
-import { fitText, padText } from "./sidebar/text";
+import { fitText, padText, textWidth } from "./sidebar/text";
+import { findLineHits, type SearchHit } from "./search";
 import type { PatchHunk } from "./unifiedPatch";
 
 /** Id of the full-file presentation, qualified by hunk as `hunk-viewed:full`. */
@@ -22,6 +23,42 @@ const SPLIT_MAX_CHARS = 1_000_000;
 export interface FullFileViewOptions {
   columns?: "single" | "split";
   width?: number;
+  /** Active search query and current pick, so rows can mark hit text as they render. */
+  hits?: { query: string; current: SearchHit | null };
+}
+
+/** Whether `range` on `(side, line)` is the search's current pick, for the bold accent mark. */
+function isCurrentHit(current: SearchHit | null | undefined, side: "old" | "new", line: number, range: readonly [number, number]): boolean {
+  return !!current && current.side === side && current.line === line && current.range[0] === range[0] && current.range[1] === range[1];
+}
+
+/**
+ * Split `text` into spans at every hit in `ranges` (already located in `text`): plain runs keep
+ * `tone`, each hit becomes `accent` (bold too for the current pick). Assumes `ranges` is
+ * non-empty; callers fall back to a merged single span otherwise so unrelated rows are unchanged.
+ */
+function splitHitContentSpans(
+  marker: string,
+  text: string,
+  tone: ExtensionFileViewSpan["tone"],
+  side: "old" | "new",
+  line: number,
+  ranges: readonly (readonly [number, number])[],
+  current: SearchHit | null | undefined,
+): ExtensionFileViewSpan[] {
+  const spans: ExtensionFileViewSpan[] = [tone ? { text: `${marker} `, tone } : { text: `${marker} ` }];
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start > cursor) spans.push(tone ? { text: text.slice(cursor, start), tone } : { text: text.slice(cursor, start) });
+    spans.push(
+      isCurrentHit(current, side, line, [start, end])
+        ? { text: text.slice(start, end), tone: "accent", attributes: ["bold"] }
+        : { text: text.slice(start, end), tone: "accent" },
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) spans.push(tone ? { text: text.slice(cursor), tone } : { text: text.slice(cursor) });
+  return spans;
 }
 
 /** Split a document into lines, dropping the empty tail a trailing newline produces. */
@@ -50,13 +87,13 @@ function documentLines(document: string): string[] {
 export function buildFullFileLayout(newDocument: string, hunks: readonly PatchHunk[], options?: FullFileViewOptions): ExtensionFileViewLayout | null {
   if (hunks.length === 0) return null;
   if (options?.columns === "split" && options.width !== undefined && options.width >= MIN_SPLIT_WIDTH) {
-    return buildSplitFileLayout(newDocument, hunks, options.width);
+    return buildSplitFileLayout(newDocument, hunks, options.width, options.hits);
   }
-  return buildSingleFileLayout(newDocument, hunks);
+  return buildSingleFileLayout(newDocument, hunks, options?.hits);
 }
 
 /** One full-width column, unlimited context, unchanged from the pre-split implementation. */
-function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[]): ExtensionFileViewLayout | null {
+function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[], hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
   const lines = documentLines(newDocument);
   if (lines.length > FULL_VIEW_MAX_ROWS) return null;
   const gutterWidth = String(Math.max(1, lines.length)).length;
@@ -67,10 +104,18 @@ function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[])
     const number = newLine === null ? " ".repeat(gutterWidth) : String(newLine).padStart(gutterWidth);
     const marker = kind === "added" ? "+" : kind === "removed" ? "-" : " ";
     const tone: ExtensionFileViewSpan["tone"] | undefined = kind === "added" ? "added" : kind === "removed" ? "removed" : undefined;
-    const spans: ExtensionFileViewSpan[] = [
-      { text: `${number} `, tone: "muted" },
-      tone ? { text: `${marker} ${text}`, tone } : { text: `${marker} ${text}` },
-    ];
+    // Search hits attribute to the new side for context/added lines and the old side for
+    // removed lines, exactly like `scanPatchHits`/`scanDocumentHits`.
+    const rowSide: "old" | "new" = kind === "removed" ? "old" : "new";
+    const rowLine = kind === "removed" ? oldLine : newLine;
+    const hitRanges = hits && rowLine !== null ? findLineHits(text, hits.query) : [];
+    const spans: ExtensionFileViewSpan[] =
+      hitRanges.length > 0
+        ? [{ text: `${number} `, tone: "muted" }, ...splitHitContentSpans(marker, text, tone, rowSide, rowLine!, hitRanges, hits?.current)]
+        : [
+            { text: `${number} `, tone: "muted" },
+            tone ? { text: `${marker} ${text}`, tone } : { text: `${marker} ${text}` },
+          ];
     const sourceRanges =
       inHunk && newLine !== null
         ? [{ side: "new" as const, range: [newLine, newLine] as const }]
@@ -214,8 +259,13 @@ interface SplitCell {
   tone: ExtensionFileViewSpan["tone"];
 }
 
-/** Render one column (gutter + marker + fitted text, padded to `colWidth`) as two spans. */
-function renderColumn(cell: SplitCell | null, gutterWidth: number, colWidth: number): ExtensionFileViewSpan[] {
+/**
+ * Render one column (gutter + marker + fitted text, padded to `colWidth`).
+ * Hits are located inside the already-`fitText`-truncated text, so a hit past the truncation
+ * point is simply not there to find; when one is, its own span replaces the merged content span
+ * and a final plain span restores the padding `padText` would otherwise have added.
+ */
+function renderColumn(cell: SplitCell | null, gutterWidth: number, colWidth: number, side: "old" | "new", hits: FullFileViewOptions["hits"]): ExtensionFileViewSpan[] {
   const contentWidth = Math.max(0, colWidth - gutterWidth - 1);
   if (cell === null) {
     return [
@@ -225,19 +275,34 @@ function renderColumn(cell: SplitCell | null, gutterWidth: number, colWidth: num
   }
   const gutterText = String(cell.lineNumber).padStart(gutterWidth) + " ";
   const fitted = fitText(cell.text, Math.max(0, contentWidth - 2), "…");
-  const content = padText(`${cell.marker} ${fitted}`, contentWidth);
-  return [
-    { text: gutterText, tone: "muted" },
-    cell.tone ? { text: content, tone: cell.tone } : { text: content },
-  ];
+  const hitRanges = hits ? findLineHits(fitted, hits.query) : [];
+  if (hitRanges.length === 0) {
+    const content = padText(`${cell.marker} ${fitted}`, contentWidth);
+    return [
+      { text: gutterText, tone: "muted" },
+      cell.tone ? { text: content, tone: cell.tone } : { text: content },
+    ];
+  }
+  const contentSpans = splitHitContentSpans(cell.marker, fitted, cell.tone, side, cell.lineNumber, hitRanges, hits?.current);
+  const padWidth = Math.max(0, contentWidth - textWidth(`${cell.marker} ${fitted}`));
+  if (padWidth > 0) contentSpans.push({ text: " ".repeat(padWidth) });
+  return [{ text: gutterText, tone: "muted" }, ...contentSpans];
 }
 
 /** Push one split row built from an optional old-side and new-side cell. */
-function pushSplitRow(rows: ExtensionFileViewRow[], gutterWidthOld: number, gutterWidthNew: number, colWidth: number, left: SplitCell | null, right: SplitCell | null) {
+function pushSplitRow(
+  rows: ExtensionFileViewRow[],
+  gutterWidthOld: number,
+  gutterWidthNew: number,
+  colWidth: number,
+  left: SplitCell | null,
+  right: SplitCell | null,
+  hits: FullFileViewOptions["hits"],
+) {
   const spans: ExtensionFileViewSpan[] = [
-    ...renderColumn(left, gutterWidthOld, colWidth),
+    ...renderColumn(left, gutterWidthOld, colWidth, "old", hits),
     { text: " │ ", tone: "muted" },
-    ...renderColumn(right, gutterWidthNew, colWidth),
+    ...renderColumn(right, gutterWidthNew, colWidth, "new", hits),
   ];
   rows.push({ id: `full:${rows.length}`, spans });
 }
@@ -251,7 +316,7 @@ function pushSplitRow(rows: ExtensionFileViewRow[], gutterWidthOld: number, gutt
  * sides. `sourceRanges` is attached only inside a hunk, on both sides for a paired or context
  * row and on the one present side for a leftover row.
  */
-function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], width: number): ExtensionFileViewLayout | null {
+function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
   const built = buildEntries(newDocument, hunks);
   if (built === null) return null;
   const { entries, hunkEntryRanges, gutterWidthOld, gutterWidthNew } = built;
@@ -265,7 +330,7 @@ function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], 
 
   /** Push one row and, when it falls inside a hunk, attach `sourceRanges` for the present side(s). */
   const emit = (left: SplitCell | null, right: SplitCell | null, inHunk: boolean, oldLine: number | null, newLine: number | null) => {
-    pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right);
+    pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right, hits);
     if (!inHunk) return;
     const sourceRanges: { side: "old" | "new"; range: readonly [number, number] }[] = [];
     if (left !== null && oldLine !== null) sourceRanges.push({ side: "old", range: [oldLine, oldLine] });
@@ -323,7 +388,7 @@ function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], 
   // 2 * colWidth + 3 characters; over hunk's layout caps that would draw a warning instead of the
   // view, so a file too big or a terminal too wide for two columns keeps the single-column build.
   if (rows.length * 5 > SPLIT_MAX_SPANS || rows.length * (2 * colWidth + 3) > SPLIT_MAX_CHARS) {
-    return buildSingleFileLayout(newDocument, hunks);
+    return buildSingleFileLayout(newDocument, hunks, hits);
   }
   return { rows, hunkRows };
 }

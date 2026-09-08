@@ -231,3 +231,68 @@ describe("buildFullFileLayout split columns", () => {
     expect(texts(small!).some((t) => t.includes(" │ "))).toBe(true);
   });
 });
+
+describe("buildFullFileLayout search hits", () => {
+  test("single column: an empty query or no hits option leaves the merged content span untouched", () => {
+    const doc = "nomatch here\n";
+    const hunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n nomatch here\n");
+    const withoutOption = buildFullFileLayout(doc, hunks);
+    const emptyQuery = buildFullFileLayout(doc, hunks, { hits: { query: "", current: null } });
+    const noMatch = buildFullFileLayout(doc, hunks, { hits: { query: "zzz", current: null } });
+    expect(emptyQuery).toEqual(withoutOption);
+    expect(noMatch).toEqual(withoutOption);
+  });
+
+  test("single column: a hit splits into its own accent span, bold for the current pick", () => {
+    const doc = "foo bar\nbaz foo\n";
+    const hunks = parseUnifiedPatch("@@ -1,2 +1,2 @@\n foo bar\n baz foo\n");
+    const layout = buildFullFileLayout(doc, hunks, {
+      hits: { query: "foo", current: { fileId: "x", filePath: "a.ts", side: "new", line: 2, range: [4, 7] } },
+    });
+    expect(layout).not.toBeNull();
+    // Line 1's "foo" matches but is not the current pick (that's line 2's).
+    expect(layout!.rows[0]!.spans).toEqual([
+      { text: "1 ", tone: "muted" },
+      { text: "  " },
+      { text: "foo", tone: "accent" },
+      { text: " bar" },
+    ]);
+    // Line 2's "foo" is the current pick: accent and bold.
+    expect(layout!.rows[1]!.spans).toEqual([
+      { text: "2 ", tone: "muted" },
+      { text: "  " },
+      { text: "baz " },
+      { text: "foo", tone: "accent", attributes: ["bold"] },
+    ]);
+    expectValidFileViewLayout(layout!, 1);
+  });
+
+  test("split columns: a hit splits on both sides independently, bold only on the current pick's side", () => {
+    const doc = "foo bar\n";
+    const hunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-old foo\n+foo bar\n");
+    const layout = buildFullFileLayout(doc, hunks, {
+      columns: "split",
+      width: 48,
+      hits: { query: "foo", current: { fileId: "x", filePath: "a.ts", side: "new", line: 1, range: [0, 3] } },
+    });
+    expect(layout).not.toBeNull();
+    // Left (old side, "old foo" removed): a match, but not the current pick (that lives on "new").
+    expect(layout!.rows[0]!.spans.slice(0, 5)).toEqual([
+      { text: "1 ", tone: "muted" },
+      { text: "- ", tone: "removed" },
+      { text: "old ", tone: "removed" },
+      { text: "foo", tone: "accent" },
+      { text: "           " },
+    ]);
+    // Right (new side, "foo bar" added): the current pick, so bold.
+    expect(layout!.rows[0]!.spans.slice(6)).toEqual([
+      { text: "1 ", tone: "muted" },
+      { text: "+ ", tone: "added" },
+      { text: "foo", tone: "accent", attributes: ["bold"] },
+      { text: " bar", tone: "added" },
+      { text: "           " },
+    ]);
+    expect(layout!.rows[0]!.spans[5]).toEqual({ text: " │ ", tone: "muted" });
+    expectValidFileViewLayout(layout!, 1);
+  });
+});

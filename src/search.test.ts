@@ -167,6 +167,17 @@ describe("rebuildHits", () => {
     expect(currentHit()).toEqual(pinned);
   });
 
+  test("keeps the current hit across a rebuild when hunk renumbers the file's id but the path stays the same", () => {
+    setQuery("foo");
+    rebuildHits([fileA, fileB]);
+    const pinned = currentHit();
+    expect(pinned).not.toBeNull();
+    // Same path, same side/line/range, but a different runtime file id, as after a reload.
+    const reloadedFileA = file("a-reloaded", "a.ts", fileA.patch);
+    rebuildHits([reloadedFileA, fileB]);
+    expect(currentHit()).toEqual({ ...pinned!, fileId: "a-reloaded" });
+  });
+
   test("clamps the index into bounds when the current hit disappears", () => {
     setQuery("foo");
     rebuildHits([fileA, fileB]);
