@@ -25,7 +25,7 @@ import type {
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
 import registerExtension from "./index";
 import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter, visibleFiles } from "./src/reviewMirror";
-import { getSearchState, rebuildHits, resetSearchForTests, setQuery, stepHit, toggleFullViewFile } from "./src/search";
+import { getSearchState, rebuildHits, resetSearchForTests, setFullViewFile, setQuery, stepHit, toggleFullViewFile } from "./src/search";
 import { enterSingleFile, getSingleFileState, resetSingleFileForTests, setSingleFilePending } from "./src/singleFile";
 import { getViewedState, isViewed, resetViewedStoreForTests, toggleViewed as storeToggleViewed } from "./src/viewedStore";
 
@@ -90,6 +90,7 @@ function eventContext(cwd: string, notify: (message: string, type?: string) => v
 /** Calls a command handler made against `ctx.fileViews`, `ctx.commands`, `ctx.keyboardModes`, `ctx.panes`, `ctx.highlights`, and `ctx.navigation`. */
 interface CommandCalls {
   fileViewSelects: Array<string | null>;
+  /** `"<viewId>"`, or `"<viewId>:<fileId>"` for a scoped `refresh(id, { fileId })` call. */
   fileViewRefreshes: string[];
   fileViewToggles: string[];
   executed: string[];
@@ -103,9 +104,16 @@ interface CommandCalls {
   executeResult: boolean;
   paneOpens: string[];
   paneCloses: string[];
+  /** `"<highlighterId>"`, or `"<highlighterId>:<fileId>"` for a scoped `refresh(id, { fileId })` call. */
   highlightRefreshes: string[];
   enteredModes: string[];
   revealed: Array<{ fileId: string; side: string; line: number }>;
+  /** What `fileViews.isActive(FULL_VIEW_ID)` reports; `toggle` flips it unless `fileViewToggleRefused`. */
+  fileViewActive: boolean;
+  /** Simulates hunk declining the toggle (the view's `matches`/`layout` refuses it): `toggle` becomes a no-op. */
+  fileViewToggleRefused: boolean;
+  /** Value `keyboardModes.enterMode` returns; `false` simulates the mode failing to start. */
+  enterModeResult: boolean;
 }
 
 /** Build an empty `CommandCalls` recorder for a `commandContext`. */
@@ -123,6 +131,9 @@ function createCalls(): CommandCalls {
     highlightRefreshes: [],
     enteredModes: [],
     revealed: [],
+    fileViewActive: false,
+    fileViewToggleRefused: false,
+    enterModeResult: true,
   };
 }
 
@@ -147,8 +158,12 @@ function commandContext(
     notify: (message: string, type?: string) => notified.push([message, type]),
     fileViews: {
       select: (id: string | null) => calls.fileViewSelects.push(id),
-      refresh: (id: string) => calls.fileViewRefreshes.push(id),
-      toggle: (id: string) => calls.fileViewToggles.push(id),
+      refresh: (id: string, options?: { fileId?: string }) => calls.fileViewRefreshes.push(options?.fileId ? `${id}:${options.fileId}` : id),
+      toggle: (id: string) => {
+        calls.fileViewToggles.push(id);
+        if (!calls.fileViewToggleRefused) calls.fileViewActive = !calls.fileViewActive;
+      },
+      isActive: () => calls.fileViewActive,
     },
     commands: {
       isEnabled: () => nextIsEnabled(calls),
@@ -160,8 +175,9 @@ function commandContext(
     keyboardModes: {
       isActive: () => calls.modeActive,
       enterMode: (id: string) => {
-        calls.modeActive = true;
         calls.enteredModes.push(id);
+        if (!calls.enterModeResult) return false;
+        calls.modeActive = true;
         return true;
       },
       exitMode: () => {
@@ -169,14 +185,14 @@ function commandContext(
         return true;
       },
     },
+    highlights: {
+      refresh: (id: string, options?: { fileId?: string }) => calls.highlightRefreshes.push(options?.fileId ? `${id}:${options.fileId}` : id),
+    },
     panes: {
       open: (id: string) => calls.paneOpens.push(id),
       close: (id: string) => calls.paneCloses.push(id),
       toggle: () => {},
       isOpen: () => false,
-    },
-    highlights: {
-      refresh: (id: string) => calls.highlightRefreshes.push(id),
     },
   } as unknown as ExtensionCommandContext;
 }
@@ -781,6 +797,44 @@ describe("full file view", () => {
     expect(stacked!.rows.some((row) => row.spans.map((s) => s.text).join("").includes(" │ "))).toBe(false);
   });
 
+  test("F applied: waits for the presented state to settle, then records full-view membership from it", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const file = makeFile("1", "a.ts", { patch: "@@ -1 +1 @@\n foo\n", hunks: [{ index: 0, header: "@@" }] as never });
+    loadChangeset(fake, [file]);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    const beforeHits = getSearchState().hits;
+
+    const calls = createCalls();
+    await fake.commands.get("fullFile")!.handler(commandContext(file, [], [], calls));
+
+    expect(calls.fileViewToggles).toEqual(["full"]);
+    // The store now treats "1" as a full-view file: a rebuild reads its (still empty, since no
+    // `layout` call reported document hits here) document hits instead of scanning the patch, so
+    // its patch-scanned hit disappears from the merged list.
+    expect(getSearchState().hits).not.toEqual(beforeHits);
+    expect(getSearchState().hits).toEqual([]);
+  });
+
+  test("F refused: full-view membership is not recorded when the toggle never takes effect", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const file = makeFile("1", "a.ts", { patch: "@@ -1 +1 @@\n foo\n", hunks: [{ index: 0, header: "@@" }] as never });
+    loadChangeset(fake, [file]);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    const beforeHits = getSearchState().hits;
+
+    const calls = createCalls();
+    calls.fileViewToggleRefused = true;
+    await fake.commands.get("fullFile")!.handler(commandContext(file, [], [], calls));
+
+    expect(calls.fileViewToggles).toEqual(["full"]);
+    // The toggle never took effect, so search still scans the patch for "1" — nothing changed.
+    expect(getSearchState().hits).toEqual(beforeHits);
+  }, 1000);
+
   test("layout declines a file whose parsed hunk count does not match input.file.hunks", async () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
@@ -862,7 +916,7 @@ describe("search", () => {
     expect(getSearchState().prompt.draft).toBe("f");
   });
 
-  test("a ctrl/meta chord or a multi-character sequence is swallowed, not appended", () => {
+  test("a ctrl/meta chord is swallowed, not appended; a plain printable character is", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
     const files = [makeFile("1", "a.ts")];
@@ -874,6 +928,39 @@ describe("search", () => {
     expect(mode.onKey({ sequence: "{" }, modeContext(calls))).toBe("handled");
     expect(mode.onKey({ name: "up" }, modeContext(calls))).toBe("handled");
     expect(getSearchState().prompt.draft).toBe("{");
+  });
+
+  test("a multi-character sequence (a terminal paste) appends in full, not just its first character", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    void fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    expect(mode.onKey({ sequence: "hello" }, modeContext(calls))).toBe("handled");
+    expect(getSearchState().prompt.draft).toBe("hello");
+    // A pasted sequence containing a control character is still swallowed whole.
+    expect(mode.onKey({ sequence: "a\tb" }, modeContext(calls))).toBe("handled");
+    expect(getSearchState().prompt.draft).toBe("hello");
+  });
+
+  test("OpenTUI's 'return' key name also submits the draft", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    const pending = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    mode.onKey({ sequence: "f" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    expect(mode.onKey({ name: "return" }, modeContext(calls))).toBe("exit");
+
+    await pending;
+
+    expect(getSearchState().query).toBe("foo");
   });
 
   test("Esc cancels the prompt: onExit resolves null, no query, and the pane closes when none was active", async () => {
@@ -893,6 +980,52 @@ describe("search", () => {
     expect(calls.paneCloses).toEqual(["search"]);
   });
 
+  test("calling search again while the prompt is already open is a no-op; the first prompt still resolves normally", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    const first = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    expect(calls.paneOpens).toEqual(["search"]);
+    expect(calls.enteredModes).toEqual(["search-prompt"]);
+
+    // Re-entering while the prompt is open (e.g. "Edit search" pressed again mid-edit) must not
+    // open a second pane, enter the mode again, or disturb the still-pending first prompt.
+    const second = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    expect(calls.paneOpens).toEqual(["search"]);
+    expect(calls.enteredModes).toEqual(["search-prompt"]);
+
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    mode.onKey({ sequence: "f" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    mode.onKey({ name: "enter" }, modeContext(calls));
+
+    await Promise.all([first, second]);
+
+    expect(getSearchState().query).toBe("foo");
+    expect(calls.paneCloses).toEqual([]);
+  });
+
+  test("enterMode failing to start the prompt closes the prompt state and pane, and warns", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts")];
+    loadChangeset(fake, files);
+    const calls = createCalls();
+    calls.enterModeResult = false;
+    const notified: Array<[string, string | undefined]> = [];
+
+    await fake.commands.get("search")!.handler(commandContext(files[0]!, [], notified, calls));
+
+    expect(calls.paneOpens).toEqual(["search"]);
+    expect(calls.paneCloses).toEqual(["search"]);
+    expect(getSearchState().prompt.open).toBe(false);
+    expect(notified).toEqual([["Could not open the search prompt", "warning"]]);
+    expect(getSearchState().query).toBe("");
+  });
+
   test("search with an active query advances to the next hit and reveals it", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
@@ -909,6 +1042,42 @@ describe("search", () => {
     expect(calls.revealed).toEqual([{ fileId: "1", side: "new", line: 2 }]);
     expect(calls.paneOpens).toEqual([]);
     expect(calls.enteredModes).toEqual([]);
+  });
+
+  test("moveHit refreshes only the file the pick left and the file it landed on, not every file", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [
+      makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+      makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+      makeFile("3", "c.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+    ];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "2", "3"]);
+
+    const calls = createCalls();
+    // Moves from file "1" (index 0) to file "2" (index 1): only those two files' marks changed.
+    fake.commands.get("searchNext")!.handler(commandContext(files[0]!, [], [], calls));
+
+    expect(calls.highlightRefreshes.sort()).toEqual(["search:1", "search:2"]);
+    expect(calls.fileViewRefreshes.sort()).toEqual(["full:1", "full:2"]);
+  });
+
+  test("moveHit within a single-hit file (the pick leaves and lands on the same file) refreshes it once", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const calls = createCalls();
+    fake.commands.get("searchNext")!.handler(commandContext(files[0]!, [], [], calls));
+
+    expect(calls.highlightRefreshes).toEqual(["search:1"]);
+    expect(calls.fileViewRefreshes).toEqual(["full:1"]);
   });
 
   test("searchPrevious wraps to the last hit with a notice", () => {
@@ -994,6 +1163,43 @@ describe("search", () => {
     expect(highlighter.highlight(input)).toEqual([]);
   });
 
+  test("a full-view file's document hits merge into the count once its layout reports them, and drop out again when the query changes them away", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const patchFile = makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n nomatch\n" });
+    const fullViewFile = makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n nomatch\n", hunks: [{ index: 0, header: "@@" }] as never });
+    loadChangeset(fake, [patchFile, fullViewFile]);
+    setFullViewFile("2", true);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    expect(getSearchState().hits).toEqual([]); // neither file's patch matches "foo" yet
+
+    const view = fake.fileViews.find((v) => (v as { id: string }).id === "full") as {
+      layout: (input: unknown) => Promise<unknown>;
+    };
+    await view.layout({
+      file: fullViewFile,
+      width: 80,
+      signal: new AbortController().signal,
+      changes: [],
+      readDocument: async () => "foo\n",
+    });
+
+    // The view's own `layout` pass is the only place that ever learns "b.ts" (as a full-view
+    // file) has a hit; without it rebuilding the merged list itself, the count would stay 0.
+    expect(getSearchState().hits).toEqual([{ fileId: "2", filePath: "b.ts", side: "new", line: 1, range: [0, 3] }]);
+
+    // Change the document so the same file's hits actually change; the merged list follows.
+    await view.layout({
+      file: fullViewFile,
+      width: 80,
+      signal: new AbortController().signal,
+      changes: [],
+      readDocument: async () => "nomatch\n",
+    });
+    expect(getSearchState().hits).toEqual([]);
+  });
+
   test("filter_changed drops the hidden file's hits and clamps the current index", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
@@ -1008,5 +1214,53 @@ describe("search", () => {
 
     expect(getSearchState().hits).toHaveLength(1);
     expect(getSearchState().currentIndex).toBe(0);
+  });
+
+  test("changeset_loaded prunes full-view membership for files no longer present", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    loadChangeset(fake, files);
+    setFullViewFile("1", true);
+    setFullViewFile("2", true);
+
+    // A fresh load only carries "2" onward (as if "1" no longer exists in the new changeset).
+    loadChangeset(fake, [makeFile("2", "b.ts")]);
+
+    expect(getSearchState().fullViewFileIds).toEqual(new Set(["2"]));
+  });
+
+  test("session_reload prunes full-view membership for files no longer present", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts"), makeFile("2", "b.ts")];
+    loadChangeset(fake, files);
+    setFullViewFile("1", true);
+    setFullViewFile("2", true);
+
+    fake.events.get("session_reload")!({ changeset: makeChangeset([makeFile("2", "b.ts")]), reason: "manual" }, eventContext(repoDir));
+
+    expect(getSearchState().fullViewFileIds).toEqual(new Set(["2"]));
+  });
+
+  test("the highlighter caps marks at 100 per line and 2,000 per file", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    // One line with 150 occurrences of "a" (over the 100/line cap), and enough repeated single-hit
+    // lines to push the file well past the 2,000/file cap.
+    const denseLine = "a".repeat(150);
+    const manyLines = Array.from({ length: 2100 }, () => " a").join("\n");
+    const patch = `@@ -1,2102 +1,2102 @@\n ${denseLine}\n${manyLines}\n`;
+    const file = makeFile("1", "a.ts", { patch });
+    loadChangeset(fake, [file]);
+    setQuery("a");
+    rebuildHits(visibleFiles(getReviewMirror()));
+
+    const highlighter = fake.lineHighlighters.get("search")!;
+    const marks = highlighter.highlight({ file, signal: new AbortController().signal, readDocument: async () => null }) as unknown[];
+
+    expect(marks.length).toBeLessThanOrEqual(2000);
+    const onFirstLine = marks.filter((m) => (m as { line: number }).line === 1);
+    expect(onFirstLine.length).toBeLessThanOrEqual(100);
   });
 });

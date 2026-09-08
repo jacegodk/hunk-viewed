@@ -13,7 +13,7 @@
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import type { ExtensionCommandContext, ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, HunkExtensionAPI } from "hunkdiff/extension";
+import type { ExtensionCommandContext, ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, ExtensionLineHighlight, HunkExtensionAPI } from "hunkdiff/extension";
 import { matchesKey } from "hunkdiff/extension";
 import { FOLDED_VIEW_ID, buildFoldedLayout } from "./src/foldedView";
 import { FULL_VIEW_ID, buildFullFileLayout } from "./src/fullFileView";
@@ -34,15 +34,15 @@ import {
   editDraft,
   getSearchState,
   openPrompt,
+  pruneSearchFiles,
   rebuildHits,
   sameHit,
   scanDocumentHits,
   scanPatchHits,
   setDocumentHits,
+  setFullViewFile,
   setQuery,
   stepHit,
-  toggleFullViewFile,
-  type SearchHit,
 } from "./src/search";
 import {
   applySingleFileTransform,
@@ -63,6 +63,11 @@ const FILES_PANE_ID = "files";
 const SINGLE_MODE_ID = "single";
 const SEARCH_PANE_ID = "search";
 const SEARCH_PROMPT_MODE_ID = "search-prompt";
+const SEARCH_HIGHLIGHTER_ID = "search";
+/** Hunk rejects a highlighter's whole mark set for a file above this; keep well under it. */
+const MAX_MARKS_PER_FILE = 2000;
+/** Cap marks on one line too, so one absurdly long or repetitive line can't eat the whole budget. */
+const MAX_MARKS_PER_LINE = 100;
 
 /** Poll `check` every 16 ms until it passes or `tries` runs out; returns whether it passed. */
 async function waitFor(check: () => boolean, tries = 20): Promise<boolean> {
@@ -81,52 +86,69 @@ function rebuildHitsIfActive(): void {
 /** Resolver for the open search prompt; settled by Enter (with the draft) or Esc (`null`). */
 let promptResolve: ((value: string | null) => void) | null = null;
 
-/** Reveal one search hit the way `ctx.navigation.revealLine` addresses source lines. */
-function reveal(ctx: ExtensionCommandContext, hit: SearchHit): void {
-  ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
-}
-
 /** Apply a submitted query: rebuild hits, refresh presentation, and reveal (or notice) the first pick. */
 function applySearch(ctx: ExtensionCommandContext, query: string): void {
   setQuery(query);
   rebuildHits(visibleFiles(getReviewMirror()));
-  ctx.highlights.refresh("search");
+  ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
   const hit = currentHit();
-  if (hit) reveal(ctx, hit);
+  if (hit) ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
   else ctx.notify("No hits", "info");
 }
 
 /** Clear the active search, its highlights, and its bottom-bar pane. */
 function applyClear(ctx: ExtensionCommandContext): void {
   clearSearch();
-  ctx.highlights.refresh("search");
+  ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
   ctx.panes.close(SEARCH_PANE_ID);
 }
 
-/** Move to the next/previous hit, refreshing presentation and revealing it; notices ends and wraps. */
+/**
+ * Move to the next/previous hit, refreshing only the files whose marks actually changed (the
+ * hit left, the hit landed on — a file can be both, or the two can differ, or there can be just
+ * one when there was no previous pick), and revealing the new pick; notices ends and wraps.
+ */
 function moveHit(ctx: ExtensionCommandContext, direction: 1 | -1): void {
+  const previous = currentHit();
   const step = stepHit(direction);
   if (!step) {
     ctx.notify("No hits", "info");
     return;
   }
-  ctx.highlights.refresh("search");
-  ctx.fileViews.refresh(FULL_VIEW_ID);
-  reveal(ctx, step.hit);
+  const fileIds = new Set([previous?.fileId, step.hit.fileId].filter((id): id is string => id !== undefined));
+  for (const fileId of fileIds) {
+    ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID, { fileId });
+    ctx.fileViews.refresh(FULL_VIEW_ID, { fileId });
+  }
+  ctx.navigation.revealLine(step.hit.fileId, step.hit.side, step.hit.line);
   if (step.wrapped) ctx.notify(direction === 1 ? "Wrapped to the first hit" : "Wrapped to the last hit", "info");
 }
 
 /**
  * Open the bottom-bar prompt seeded with `initial`, enter the typing mode, and await its
- * settlement. `null` (Esc) leaves search state untouched, closing the pane only if no query is
- * active; an empty submit clears the search; any other text runs it.
+ * settlement. A no-op while the prompt is already open (e.g. `search`/`searchEdit` pressed again
+ * mid-edit) rather than starting a second, competing prompt. `null` (Esc) leaves search state
+ * untouched, closing the pane only if no query is active; an empty submit clears the search; any
+ * other text runs it.
  */
 async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise<void> {
-  openPrompt(initial);
+  if (getSearchState().prompt.open) return;
+  // A resolver could be dangling here only from a bug elsewhere; settle it before starting a
+  // fresh one so that promise never hangs forever.
+  if (promptResolve) {
+    promptResolve(null);
+    promptResolve = null;
+  }
   ctx.panes.open(SEARCH_PANE_ID);
-  ctx.keyboardModes.enterMode(SEARCH_PROMPT_MODE_ID);
+  if (!ctx.keyboardModes.enterMode(SEARCH_PROMPT_MODE_ID)) {
+    closePrompt();
+    ctx.panes.close(SEARCH_PANE_ID);
+    ctx.notify("Could not open the search prompt", "warning");
+    return;
+  }
+  openPrompt(initial);
   const value = await new Promise<string | null>((resolve) => {
     promptResolve = resolve;
   });
@@ -211,12 +233,14 @@ export default function (hunk: HunkExtensionAPI) {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
+    pruneSearchFiles(changeset.files.map((file) => file.id));
     rebuildHitsIfActive();
   });
   hunk.on("session_reload", ({ changeset }, ctx) => {
     setMirrorFiles(changeset.files);
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
+    pruneSearchFiles(changeset.files.map((file) => file.id));
     rebuildHitsIfActive();
     // The reload that follows leaving single-file mode: reselect the file that mode was showing,
     // scrolled to the top, instead of leaving the selection wherever it lands by default.
@@ -283,7 +307,6 @@ export default function (hunk: HunkExtensionAPI) {
     if (!execute("hunk.app.refresh")) {
       notify("This input cannot be reloaded, so single-file mode is unavailable", "warning");
     }
-    rebuildHitsIfActive();
   }
 
   hunk.registerPane({
@@ -342,23 +365,31 @@ export default function (hunk: HunkExtensionAPI) {
       });
       // Report this file's whole-document hits regardless of whether the layout above rendered:
       // the document was read successfully either way, and `F` (not a successful layout) is what
-      // decides whether search treats this file as full-view.
-      setDocumentHits(input.file.id, scanDocumentHits(input.file, document, searchState.query));
+      // decides whether search treats this file as full-view. A rebuild is the only way the merged
+      // `hits` list (what the bottom bar's counter and `n`/`p` walk) ever learns about a full-view
+      // file's hits at all — nothing else calls `rebuildHits` when this async layout resolves —
+      // so skip it only when the reported hits didn't actually change.
+      const changed = setDocumentHits(input.file.id, scanDocumentHits(input.file, document, searchState.query));
+      if (changed && searchState.query !== "") rebuildHits(visibleFiles(getReviewMirror()));
       return built;
     },
   });
 
-  hunk.registerCommand({ id: "fullFile", title: "Toggle full file", key: "F" }, (ctx) => {
+  hunk.registerCommand({ id: "fullFile", title: "Toggle full file", key: "F" }, async (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
       ctx.notify("No file selected", "info");
       return;
     }
+    const wasFull = ctx.fileViews.isActive(FULL_VIEW_ID);
     ctx.fileViews.toggle(FULL_VIEW_ID);
-    toggleFullViewFile(file.id);
+    // `toggle` can be refused (the view's `matches`/`layout` declines), so wait for the presented
+    // state to actually settle before trusting it, rather than assuming the toggle always applied.
+    await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID) === !wasFull);
+    setFullViewFile(file.id, ctx.fileViews.isActive(FULL_VIEW_ID));
     if (getSearchState().query !== "") {
       rebuildHits(visibleFiles(getReviewMirror()));
-      ctx.highlights.refresh("search");
+      ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
       ctx.fileViews.refresh(FULL_VIEW_ID);
     }
   });
@@ -457,13 +488,11 @@ export default function (hunk: HunkExtensionAPI) {
     // by the time onEnter runs), so entry only needs to reload with that target in effect.
     onEnter(ctx) {
       ctx.commands.execute("hunk.app.refresh");
-      rebuildHitsIfActive();
     },
     onExit(ctx) {
       const { targetPath } = getSingleFileState();
       exitSingleFile(targetPath);
       ctx.commands.execute("hunk.app.refresh");
-      rebuildHitsIfActive();
     },
     onKey(key: ExtensionKeyEvent, ctx) {
       const { targetPath, pendingPath } = getSingleFileState();
@@ -498,17 +527,27 @@ export default function (hunk: HunkExtensionAPI) {
   });
 
   hunk.registerLineHighlighter({
-    id: "search",
+    id: SEARCH_HIGHLIGHTER_ID,
     highlight({ file }) {
       const { query, fullViewFileIds } = getSearchState();
       if (query === "" || fullViewFileIds.has(file.id)) return [];
       const current = currentHit();
-      return scanPatchHits(file, query).map((hit) => ({
-        side: hit.side,
-        line: hit.line,
-        range: hit.range,
-        tone: current && sameHit(hit, current) ? "current" : "match",
-      }));
+      const marksPerLine = new Map<string, number>();
+      const marks: ExtensionLineHighlight[] = [];
+      for (const hit of scanPatchHits(file, query)) {
+        if (marks.length >= MAX_MARKS_PER_FILE) break;
+        const lineKey = `${hit.side}:${hit.line}`;
+        const marksOnLine = marksPerLine.get(lineKey) ?? 0;
+        if (marksOnLine >= MAX_MARKS_PER_LINE) continue;
+        marksPerLine.set(lineKey, marksOnLine + 1);
+        marks.push({
+          side: hit.side,
+          line: hit.line,
+          range: hit.range,
+          tone: current && sameHit(hit, current) ? "current" : "match",
+        });
+      }
+      return marks;
     },
   });
 
@@ -516,7 +555,8 @@ export default function (hunk: HunkExtensionAPI) {
     id: SEARCH_PROMPT_MODE_ID,
     title: "Search",
     // Owns every key while open: Enter submits the draft and leaves the mode, Backspace edits it,
-    // one printable character appends, and anything else (including a bare modifier chord) is
+    // printable text appends (one key's `sequence` can be more than one character — a terminal
+    // paste arrives as a single key event), and anything else (including a bare modifier chord) is
     // swallowed rather than falling through to the app's own command table. Esc is host-owned and
     // never reaches here; `onExit` below settles the prompt's promise for that path.
     onKey(key) {
@@ -529,7 +569,12 @@ export default function (hunk: HunkExtensionAPI) {
         editDraft(getSearchState().prompt.draft.slice(0, -1));
         return "handled";
       }
-      if (key.sequence && key.sequence.length === 1 && key.sequence.codePointAt(0)! >= 0x20 && !key.ctrl && !key.meta) {
+      if (
+        key.sequence &&
+        !key.ctrl &&
+        !key.meta &&
+        [...key.sequence].every((character) => character.codePointAt(0)! >= 0x20)
+      ) {
         editDraft(getSearchState().prompt.draft + key.sequence);
         return "handled";
       }
