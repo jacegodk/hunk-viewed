@@ -37,6 +37,7 @@ import {
   setSingleFileTarget,
 } from "./src/singleFile";
 import { FilesPane } from "./src/sidebar/FilesPane";
+import { SearchBar } from "./src/sidebar/SearchBar";
 import { parseUnifiedPatch } from "./src/unifiedPatch";
 import { readRepoFiles, resolveViewedFilePath, writeRepoFiles } from "./src/viewedFile";
 import { clearRepo, getViewedState, isViewed, loadRepo, reconcileViewed, setPersist, toggleViewed } from "./src/viewedStore";
@@ -199,6 +200,14 @@ export default function (hunk: HunkExtensionAPI) {
     replaces: "hunk:files",
     width: { preferred: 34, min: 22 },
     component: FilesPane,
+  });
+
+  hunk.registerPane({
+    id: "search",
+    title: "Search",
+    placement: "bottom",
+    height: { preferred: 1, min: 1, max: 1 },
+    component: SearchBar,
   });
 
   hunk.registerFileView({

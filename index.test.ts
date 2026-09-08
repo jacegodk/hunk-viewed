@@ -191,8 +191,10 @@ describe("registration", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);
 
-    expect(fake.panes).toHaveLength(1);
+    expect(fake.panes).toHaveLength(2);
     expect((fake.panes[0] as { replaces?: string }).replaces).toBe("hunk:files");
+    expect((fake.panes[1] as { id?: string; placement?: string }).id).toBe("search");
+    expect((fake.panes[1] as { id?: string; placement?: string }).placement).toBe("bottom");
 
     expect(fake.commands.get("toggleViewed")?.command.key).toBe("v");
     expect(fake.commands.get("nextUnviewed")?.command.key).toBe("J");
