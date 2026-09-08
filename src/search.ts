@@ -77,13 +77,25 @@ export function findLineHits(text: string, query: string): Array<readonly [numbe
   return hits;
 }
 
+/** One exact source location a hit or a mark can address. */
+export interface HitLocation {
+  side: "old" | "new";
+  line: number;
+  range: readonly [number, number];
+}
+
+/** Whether two locations address the same side, line, and character range. */
+export function sameHitLocation(a: HitLocation, b: HitLocation): boolean {
+  return a.side === b.side && a.line === b.line && a.range[0] === b.range[0] && a.range[1] === b.range[1];
+}
+
 /**
- * Two hits are the same pick target when path, side, line, and range all match.
+ * Two hits are the same pick target when path and location both match.
  * Compares `filePath` rather than `fileId`: hunk renumbers file ids on reload, so an id-based
  * compare would lose the pinned hit across every reload even though the same line still matches.
  */
 export function sameHit(a: SearchHit, b: SearchHit): boolean {
-  return a.filePath === b.filePath && a.side === b.side && a.line === b.line && a.range[0] === b.range[0] && a.range[1] === b.range[1];
+  return a.filePath === b.filePath && sameHitLocation(a, b);
 }
 
 /**
@@ -157,10 +169,10 @@ export function setQuery(query: string): void {
   publish({ query, hits: [], currentIndex: -1 });
 }
 
-/** Whether two hit lists address the same (side, line, range) set, in the same order. */
+/** Whether two hit lists address the same (side, line, range) locations, in the same order. */
 function sameHitRanges(a: readonly SearchHit[], b: readonly SearchHit[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((hit, i) => hit.side === b[i]!.side && hit.line === b[i]!.line && hit.range[0] === b[i]!.range[0] && hit.range[1] === b[i]!.range[1]);
+  return a.every((hit, i) => sameHitLocation(hit, b[i]!));
 }
 
 /**
@@ -174,14 +186,6 @@ export function setDocumentHits(fileId: string, hits: readonly SearchHit[]): boo
   documentHits.set(fileId, hits);
   publish({});
   return changed;
-}
-
-/** Toggle whether a file shows the full-file view for search-scanning purposes. */
-export function toggleFullViewFile(fileId: string): void {
-  const next = new Set(state.fullViewFileIds);
-  if (next.has(fileId)) next.delete(fileId);
-  else next.add(fileId);
-  publish({ fullViewFileIds: next });
 }
 
 /** Set whether a file shows the full-file view for search-scanning purposes. */
@@ -212,15 +216,23 @@ function clampIndex(index: number, length: number): number {
   return Math.min(Math.max(index, 0), length - 1);
 }
 
+/** Options narrowing which visible files `rebuildHits` scans. */
+export interface RebuildHitsOptions {
+  /** Files to skip entirely — a viewed (folded) file's row shows no marks, so it is not scanned. */
+  excludeFileIds?: ReadonlySet<string>;
+}
+
 /**
  * Rebuild the merged hit list from the given visible files, in order.
- * Uses reported document hits for files in `fullViewFileIds`, otherwise scans the patch.
- * Keeps pointing at the current hit if it still exists in the new list, else clamps the index.
+ * Skips any file in `options.excludeFileIds`. Uses reported document hits for files in
+ * `fullViewFileIds`, otherwise scans the patch. Keeps pointing at the current hit if it still
+ * exists in the new list, else clamps the index.
  */
-export function rebuildHits(visibleFiles: readonly ExtensionDiffFile[]): void {
+export function rebuildHits(visibleFiles: readonly ExtensionDiffFile[], options?: RebuildHitsOptions): void {
   const pinned = currentHit();
   const nextHits: SearchHit[] = [];
   for (const file of visibleFiles) {
+    if (options?.excludeFileIds?.has(file.id)) continue;
     if (state.fullViewFileIds.has(file.id)) nextHits.push(...(documentHits.get(file.id) ?? []));
     else nextHits.push(...scanPatchHits(file, state.query));
   }

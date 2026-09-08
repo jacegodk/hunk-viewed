@@ -25,7 +25,7 @@ import type {
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
 import registerExtension from "./index";
 import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter, visibleFiles } from "./src/reviewMirror";
-import { getSearchState, rebuildHits, resetSearchForTests, setFullViewFile, setQuery, stepHit, toggleFullViewFile } from "./src/search";
+import { getSearchState, rebuildHits, resetSearchForTests, setFullViewFile, setQuery, stepHit } from "./src/search";
 import { enterSingleFile, getSingleFileState, resetSingleFileForTests, setSingleFilePending } from "./src/singleFile";
 import { getViewedState, isViewed, resetViewedStoreForTests, toggleViewed as storeToggleViewed } from "./src/viewedStore";
 
@@ -1159,8 +1159,70 @@ describe("search", () => {
       { side: "new", line: 2, range: [0, 3], tone: "match" },
     ]);
 
-    toggleFullViewFile("1");
+    setFullViewFile("1", true);
     expect(highlighter.highlight(input)).toEqual([]);
+  });
+
+  test("the search highlighter returns no marks for a viewed file", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    storeToggleViewed(files[0]!, new Date());
+
+    const highlighter = fake.lineHighlighters.get("search")!;
+    const input = { file: files[0]!, signal: new AbortController().signal, readDocument: async () => null };
+    expect(highlighter.highlight(input)).toEqual([]);
+  });
+
+  test("a viewed file is excluded from the scan; unmarking it with v rebuilds hits and refreshes its marks", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [
+      makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+      makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+      makeFile("3", "c.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }),
+    ];
+    loadChangeset(fake, files);
+    storeToggleViewed(files[1]!, new Date()); // "b.ts" is viewed before the search even starts
+
+    const calls = createCalls();
+    const pending = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    const mode = fake.keyboardModes.get("search-prompt")!;
+    mode.onKey({ sequence: "f" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    mode.onKey({ sequence: "o" }, modeContext(calls));
+    mode.onKey({ name: "enter" }, modeContext(calls));
+    await pending;
+
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "3"]); // "2" (viewed) excluded
+
+    // `v` unmarks "b.ts": the query is active, so the command rebuilds and refreshes just that file.
+    const unmarkCalls = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(files[1]!, [], [], unmarkCalls));
+
+    expect(isViewed(getViewedState(), files[1]!)).toBe(false);
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "2", "3"]);
+    expect(unmarkCalls.highlightRefreshes).toEqual(["search:2"]);
+  });
+
+  test("marking a file viewed while a query is active drops its hits and refreshes its marks", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }), makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "2"]);
+
+    const calls = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(files[1]!, [], [], calls));
+
+    expect(isViewed(getViewedState(), files[1]!)).toBe(true);
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1"]);
+    expect(calls.highlightRefreshes).toEqual(["search:2"]);
   });
 
   test("a full-view file's document hits merge into the count once its layout reports them, and drop out again when the query changes them away", async () => {
@@ -1214,6 +1276,31 @@ describe("search", () => {
 
     expect(getSearchState().hits).toHaveLength(1);
     expect(getSearchState().currentIndex).toBe(0);
+  });
+
+  test("entering single-file mode restricts the hit count to the shown file; leaving it restores the rest", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" }), makeFile("2", "b.ts", { patch: "@@ -1,1 +1,1 @@\n foo\n" })];
+    loadChangeset(fake, files);
+    setQuery("foo");
+    rebuildHits(visibleFiles(getReviewMirror()));
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "2"]);
+
+    enterSingleFile("a.ts");
+    // A single-file-mode reload's changeset only ever carries the one target file.
+    const ctx = eventContext(repoDir);
+    fake.events.get("changeset_loaded")!({ changeset: makeChangeset([files[0]!]) }, ctx);
+    fake.events.get("session_reload")!({ changeset: makeChangeset([files[0]!]), reason: "manual" }, ctx);
+
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1"]);
+
+    // Leaving the mode reloads the full changeset again.
+    fake.keyboardModes.get("single")!.onExit!(modeContext(createCalls()));
+    fake.events.get("changeset_loaded")!({ changeset: makeChangeset(files) }, ctx);
+    fake.events.get("session_reload")!({ changeset: makeChangeset(files), reason: "manual" }, ctx);
+
+    expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "2"]);
   });
 
   test("changeset_loaded prunes full-view membership for files no longer present", () => {

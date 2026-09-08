@@ -17,7 +17,6 @@ import {
   setFullViewFile,
   setQuery,
   stepHit,
-  toggleFullViewFile,
 } from "./search";
 
 function file(id: string, path: string, patch: string): ExtensionDiffFile {
@@ -132,15 +131,6 @@ describe("setQuery", () => {
   });
 });
 
-describe("toggleFullViewFile", () => {
-  test("adds then removes a file id", () => {
-    toggleFullViewFile("f1");
-    expect(getSearchState().fullViewFileIds.has("f1")).toBe(true);
-    toggleFullViewFile("f1");
-    expect(getSearchState().fullViewFileIds.has("f1")).toBe(false);
-  });
-});
-
 describe("setFullViewFile", () => {
   test("sets membership directly instead of toggling", () => {
     setFullViewFile("f1", true);
@@ -202,7 +192,7 @@ describe("rebuildHits", () => {
   const fileB = file("b", "b.ts", ["@@ -1,1 +1,1 @@", " foo baz"].join("\n"));
 
   test("merges patch and document hits in visible-file order", () => {
-    toggleFullViewFile("b");
+    setFullViewFile("b", true);
     setDocumentHits("b", [{ fileId: "b", filePath: "b.ts", side: "new", line: 5, range: [0, 3] }]);
     setQuery("foo");
     rebuildHits([fileA, fileB]);
@@ -292,7 +282,7 @@ describe("stepHit", () => {
 
 describe("clearSearch", () => {
   test("resets query/hits/index/prompt but keeps fullViewFileIds", () => {
-    toggleFullViewFile("f1");
+    setFullViewFile("f1", true);
     openPrompt("foo");
     setQuery("foo");
     clearSearch();

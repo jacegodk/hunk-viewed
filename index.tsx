@@ -10,6 +10,11 @@
  * clicked in the pane, with `J`/`K` retargeting instead of jumping the full review. Marks
  * persist per repo in the XDG state dir and reset when a file's patch changes. The pane replaces
  * hunk's files pane and shows marks and progress.
+ *
+ * `ctrl+f`/`f3` open the bottom-bar search prompt, or jump to the next hit when a search is
+ * already active; `n`/`p` step to the next/previous hit. Matches are painted by a line highlighter
+ * in the normal diff and as accent spans in the full-file view; viewed files are excluded from
+ * the scan.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -78,9 +83,21 @@ async function waitFor(check: () => boolean, tries = 20): Promise<boolean> {
   return false;
 }
 
+/** Ids of the given files currently marked viewed: their folded row shows no marks, so a viewed file is never scanned. */
+function viewedFileIds(files: readonly ExtensionDiffFile[]): Set<string> {
+  const viewed = getViewedState();
+  return new Set(files.filter((file) => isViewed(viewed, file)).map((file) => file.id));
+}
+
+/** Rebuild the merged hit list from the currently visible files, excluding viewed ones. */
+function rebuildVisibleHits(): void {
+  const visible = visibleFiles(getReviewMirror());
+  rebuildHits(visible, { excludeFileIds: viewedFileIds(visible) });
+}
+
 /** Rebuild the merged hit list from the currently visible files, only while a search is active. */
 function rebuildHitsIfActive(): void {
-  if (getSearchState().query !== "") rebuildHits(visibleFiles(getReviewMirror()));
+  if (getSearchState().query !== "") rebuildVisibleHits();
 }
 
 /** Resolver for the open search prompt; settled by Enter (with the draft) or Esc (`null`). */
@@ -89,7 +106,7 @@ let promptResolve: ((value: string | null) => void) | null = null;
 /** Apply a submitted query: rebuild hits, refresh presentation, and reveal (or notice) the first pick. */
 function applySearch(ctx: ExtensionCommandContext, query: string): void {
   setQuery(query);
-  rebuildHits(visibleFiles(getReviewMirror()));
+  rebuildVisibleHits();
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
   const hit = currentHit();
@@ -370,7 +387,7 @@ export default function (hunk: HunkExtensionAPI) {
       // file's hits at all — nothing else calls `rebuildHits` when this async layout resolves —
       // so skip it only when the reported hits didn't actually change.
       const changed = setDocumentHits(input.file.id, scanDocumentHits(input.file, document, searchState.query));
-      if (changed && searchState.query !== "") rebuildHits(visibleFiles(getReviewMirror()));
+      if (changed && searchState.query !== "") rebuildVisibleHits();
       return built;
     },
   });
@@ -388,7 +405,7 @@ export default function (hunk: HunkExtensionAPI) {
     await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID) === !wasFull);
     setFullViewFile(file.id, ctx.fileViews.isActive(FULL_VIEW_ID));
     if (getSearchState().query !== "") {
-      rebuildHits(visibleFiles(getReviewMirror()));
+      rebuildVisibleHits();
       ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
       ctx.fileViews.refresh(FULL_VIEW_ID);
     }
@@ -402,6 +419,12 @@ export default function (hunk: HunkExtensionAPI) {
     }
     const result = toggleViewed(file, new Date());
     ctx.fileViews.select(result === "cleared" ? null : FOLDED_VIEW_ID);
+    // Marking (or unmarking) a file changes whether it is scanned at all: rebuild the merged
+    // list and refresh just this file's marks so they appear/disappear with the fold.
+    if (getSearchState().query !== "") {
+      rebuildVisibleHits();
+      ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID, { fileId: file.id });
+    }
   });
 
   /**
@@ -530,7 +553,7 @@ export default function (hunk: HunkExtensionAPI) {
     id: SEARCH_HIGHLIGHTER_ID,
     highlight({ file }) {
       const { query, fullViewFileIds } = getSearchState();
-      if (query === "" || fullViewFileIds.has(file.id)) return [];
+      if (query === "" || fullViewFileIds.has(file.id) || isViewed(getViewedState(), file)) return [];
       const current = currentHit();
       const marksPerLine = new Map<string, number>();
       const marks: ExtensionLineHighlight[] = [];

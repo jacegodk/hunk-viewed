@@ -1,6 +1,6 @@
 import type { ExtensionFileViewLayout, ExtensionFileViewRow, ExtensionFileViewSpan } from "hunkdiff/extension";
 import { fitText, padText, textWidth } from "./sidebar/text";
-import { findLineHits, type SearchHit } from "./search";
+import { findLineHits, sameHitLocation, type SearchHit } from "./search";
 import type { PatchHunk } from "./unifiedPatch";
 
 /** Id of the full-file presentation, qualified by hunk as `hunk-viewed:full`. */
@@ -46,7 +46,7 @@ export interface FullFileViewOptions {
 
 /** Whether `range` on `(side, line)` is the search's current pick, for the bold accent mark. */
 function isCurrentHit(current: SearchHit | null | undefined, side: "old" | "new", line: number, range: readonly [number, number]): boolean {
-  return !!current && current.side === side && current.line === line && current.range[0] === range[0] && current.range[1] === range[1];
+  return !!current && sameHitLocation(current, { side, line, range });
 }
 
 /**
