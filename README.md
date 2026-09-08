@@ -1,8 +1,8 @@
 # hunk-viewed
 
 GitLab-style "viewed" marks for [hunk](https://hunk.dev). Mark a file as viewed and fold it to one
-line, see the check mark in the files pane, review one file at a time, open the whole file, and
-keep the marks between runs.
+line, see the check mark in the files pane, review one file at a time, open the whole file, search
+inside the changes, and keep the marks between runs.
 
 It is a plain hunk extension. It changes nothing in hunk itself and needs hunk 0.21 or newer
 (extension API 16).
@@ -34,6 +34,9 @@ hunk diff --extension ~/work/hunk-viewed
 | `N` | `hunk-viewed.skipToUnviewed` | Next unviewed file. Skips viewed files; `J`/`K` do not. |
 | `F` | `hunk-viewed.fullFile` | Toggle the full file: every line, with the diff marked in place. Side by side when hunk's layout is split, one column when stacked. |
 | `o` | `hunk-viewed.singleFile` | Toggle single-file mode: the review shows only the current file, the pane still lists all files. |
+| `ctrl+f`, `f3` | `hunk-viewed.search` | Search: open the prompt, or jump to the next hit when a search is active. |
+| `n` | `hunk-viewed.searchNext` | Next hit. |
+| `p`, `shift+f3`, `ctrl+shift+f` | `hunk-viewed.searchPrevious` | Previous hit. |
 
 Inside single-file mode: `,` and `.` show the previous or next file, `J` and `K` do the same,
 `v` folds or unfolds the shown file, a click in the pane picks a file and `Enter` shows it,
@@ -45,6 +48,8 @@ Menu-only commands, in **Extensions**:
 | --- | --- |
 | `hunk-viewed.foldViewed` | Fold every viewed file. Select a viewed file first; hunk applies the fold from there to all matching files. |
 | `hunk-viewed.clearRepo` | Remove every mark for this repo, after a confirmation. |
+| `hunk-viewed.searchEdit` | Open the search prompt, prefilled with the current query. |
+| `hunk-viewed.searchClear` | Clear the active search and hide the search bar. |
 
 The ids `nextUnviewed` and `previousUnviewed` are historical; they move to the next and
 previous file and never skip viewed files. Rebind any command in `~/.config/hunk/config.toml`:
@@ -57,8 +62,28 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
 "hunk-viewed.skipToUnviewed" = "N"
 "hunk-viewed.fullFile" = "F"
 "hunk-viewed.singleFile" = "o"
-"hunk-viewed.foldViewed" = "ctrl+f"
+"hunk-viewed.foldViewed" = "ctrl+g"
+"hunk-viewed.search" = ["ctrl+f", "f3"]
+"hunk-viewed.searchNext" = "n"
+"hunk-viewed.searchPrevious" = ["p", "shift+f3", "ctrl+shift+f"]
 ```
+
+## Search
+
+`ctrl+f` or `f3` opens the prompt in a one-row bar at the bottom. Typing shows
+`Search: text▏`; `Enter` runs the search and the bar switches to
+`Search: text  3/17 hits  file:line`; `Esc` cancels; an empty `Enter` clears the search and hides
+the bar.
+
+The search scans visible files only: patch lines (context and added text on the new side, removed
+text on the old side) for a normal diff file, or the whole new-side document for a file currently
+showing the full file view (`F`). Hiding a file with hunk's filter, entering single-file mode, or
+toggling the full file view changes what is scanned and the hit count with it.
+
+Hits are highlighted on their exact matched characters, the current hit stronger than the rest. In
+the full file view hits use the accent color instead of hunk's own search tones. `n` or `ctrl+f`/`f3`
+move to the next hit, `p`, `shift+f3`, or `ctrl+shift+f` to the previous; navigation wraps at either
+end with a notice.
 
 ## How marks work
 
@@ -84,6 +109,16 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
   full-file view guesses split when the review body is at least 116 columns wide, which matches
   hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,
   press `F` twice on an open full-file view to re-render it.
+- Search has no regex; matching is case-insensitive substring only. A hit inside collapsed context
+  lands on its hunk, not the exact line (hunk's `revealLine` fallback). In the full file view, hits
+  in removed lines are painted but are not navigable hits, because only the new-side document is
+  scanned. At most 100 hits per line and 2,000 per file are highlighted; the full file view falls
+  back to hits-free rendering (still full, just unmarked) on very large files. `shift+f3` and
+  `ctrl+shift+f` need a terminal with the kitty keyboard protocol; on others `shift+f3` is dropped
+  and `ctrl+shift+f` acts as `ctrl+f`. If a newer hunk binds `n` to "next note" by default, it warns
+  at startup and refuses this extension's `n`; rebind `hunk-viewed.searchNext` when that happens. A
+  full view applied from hunk's own View menu instead of `F` does not count as a full view for
+  search until `F` is pressed on that file.
 
 ## Development
 
