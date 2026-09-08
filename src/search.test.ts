@@ -168,14 +168,23 @@ describe("rebuildHits", () => {
   });
 
   test("keeps the current hit across a rebuild when hunk renumbers the file's id but the path stays the same", () => {
+    // Three single-hit files so a reorder plus an id change can't coincidentally land on the
+    // right index by luck: a fileId-based pin would silently clamp onto a *different* file's
+    // hit here, rather than following the renumbered file by its path.
+    const one = file("a", "a.ts", "@@ -1,1 +1,1 @@\n foo A\n");
+    const two = file("b", "b.ts", "@@ -1,1 +1,1 @@\n foo B\n");
+    const three = file("c", "c.ts", "@@ -1,1 +1,1 @@\n foo C\n");
     setQuery("foo");
-    rebuildHits([fileA, fileB]);
+    rebuildHits([one, two, three]);
+    stepHit(1); // move onto "b.ts"'s hit
     const pinned = currentHit();
-    expect(pinned).not.toBeNull();
-    // Same path, same side/line/range, but a different runtime file id, as after a reload.
-    const reloadedFileA = file("a-reloaded", "a.ts", fileA.patch);
-    rebuildHits([reloadedFileA, fileB]);
-    expect(currentHit()).toEqual({ ...pinned!, fileId: "a-reloaded" });
+    expect(pinned).toEqual({ fileId: "b", filePath: "b.ts", side: "new", line: 1, range: [0, 3] });
+
+    // Reload renumbers "b.ts" to a new id and reorders the files; the same line still matches.
+    const reloadedTwo = file("b-reloaded", "b.ts", two.patch);
+    rebuildHits([reloadedTwo, one, three]);
+
+    expect(currentHit()).toEqual({ fileId: "b-reloaded", filePath: "b.ts", side: "new", line: 1, range: [0, 3] });
   });
 
   test("clamps the index into bounds when the current hit disappears", () => {
