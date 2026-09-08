@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fitText, formatTerminalPath, padText, textWidth } from "./text";
+import { fitText, fitTextTail, formatTerminalPath, padText, textWidth } from "./text";
 
 describe("formatTerminalPath", () => {
   test("escapes controls and backslashes", () => {
@@ -35,5 +35,21 @@ describe("fitText / padText", () => {
   });
   test("padText pads by display cells", () => {
     expect(padText("日", 4)).toBe("日  ");
+  });
+});
+
+describe("fitTextTail", () => {
+  test("returns text that fits unchanged", () => {
+    expect(fitTextTail("abc", 5)).toBe("abc");
+  });
+  test("keeps the tail (end), not the head, of text too long for width", () => {
+    expect(fitTextTail("abcdef▏", 4)).toBe("def▏");
+  });
+  test("returns empty for zero width", () => {
+    expect(fitTextTail("abc", 0)).toBe("");
+  });
+  test("counts display cells, not code points", () => {
+    // "日本語" is 6 cells; keeping only the last 4 cells keeps "本語".
+    expect(fitTextTail("日本語", 4)).toBe("本語");
   });
 });

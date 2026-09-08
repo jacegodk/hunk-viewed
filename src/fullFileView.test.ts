@@ -295,4 +295,37 @@ describe("buildFullFileLayout search hits", () => {
     expect(layout!.rows[0]!.spans[5]).toEqual({ text: " │ ", tone: "muted" });
     expectValidFileViewLayout(layout!, 1);
   });
+
+  test("single column: hit-splitting that would exceed hunk's span cap falls back to the hit-free build", () => {
+    // Every row matches "a" 50 times over (worst case: no gap between hits), so hit-splitting
+    // alone pushes the exact span count well past SPLIT_MAX_SPANS (40,000) while the plain
+    // 2-spans-per-row build (18,000 spans over 9,000 rows) stays comfortably under it.
+    const bigLines = Array.from({ length: 9000 }, () => "a".repeat(50));
+    bigLines[0] = "changed";
+    const bigDoc = bigLines.join("\n") + "\n";
+    const bigHunk = parseUnifiedPatch(`@@ -1,1 +1,1 @@\n-${"a".repeat(50)}\n+changed\n`);
+    const withHits = buildFullFileLayout(bigDoc, bigHunk, { hits: { query: "a", current: null } });
+    const withoutHits = buildFullFileLayout(bigDoc, bigHunk);
+    expect(withHits).not.toBeNull();
+    expect(withHits!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    expect(withHits).toEqual(withoutHits);
+    expectValidFileViewLayout(withHits!, 1);
+  });
+
+  test("split columns: hit-splitting that would exceed hunk's span cap falls back to the hit-free split build (not single column)", () => {
+    // Every row matches "foo" once; hit-splitting's ~11 spans/row over 4,000 rows (44,000) crosses
+    // the cap, but the plain split shape (5 spans/row, 20,000) stays under it — so the fallback
+    // should keep the split presentation and only drop the hit spans.
+    const bigLines = Array.from({ length: 4000 }, (_, i) => `foo line ${i + 1}`);
+    bigLines[0] = "changed";
+    const bigDoc = bigLines.join("\n") + "\n";
+    const bigHunk = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-foo line 1\n+changed\n");
+    const withHits = buildFullFileLayout(bigDoc, bigHunk, { columns: "split", width: 200, hits: { query: "foo", current: null } });
+    const withoutHits = buildFullFileLayout(bigDoc, bigHunk, { columns: "split", width: 200 });
+    expect(withHits).not.toBeNull();
+    expect(texts(withHits!).some((t) => t.includes(" │ "))).toBe(true);
+    expect(withHits!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    expect(withHits).toEqual(withoutHits);
+    expectValidFileViewLayout(withHits!, 1);
+  });
 });

@@ -92,3 +92,24 @@ export function padText(text: string, width: number): string {
   const trimmed = fitText(text, width);
   return `${trimmed}${" ".repeat(Math.max(0, width - textWidth(trimmed)))}`;
 }
+
+/**
+ * Truncate text to `width` display cells by keeping its tail (end) rather than its head, with no
+ * overflow marker. For text whose meaningful part is at the end — a typed draft with a trailing
+ * cursor glyph — so the visible slice always ends on the same characters the head-truncating
+ * `fitText` would otherwise cut off.
+ */
+export function fitTextTail(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (textWidth(text) <= width) return text;
+  const characters = [...text];
+  let usedWidth = 0;
+  let startIndex = characters.length;
+  for (let i = characters.length - 1; i >= 0; i -= 1) {
+    const w = cellWidth(characters[i]!.codePointAt(0)!);
+    if (usedWidth + w > width) break;
+    usedWidth += w;
+    startIndex = i;
+  }
+  return characters.slice(startIndex).join("");
+}

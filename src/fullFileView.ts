@@ -11,13 +11,30 @@ export const FULL_VIEW_MAX_ROWS = 10_000;
 const MIN_SPLIT_WIDTH = 48;
 /**
  * Hunk's layout validator caps (`src/ui/fileViews/layout.ts` in the hunk checkout): a layout with
- * more spans or text characters than these is rejected with a user-visible warning. Single-column
- * rows stay well under both; a split row's five spans per row (two per column plus the separator)
- * can cross them on a very wide terminal or a very long file, so `buildSplitFileLayout` falls back
- * to `buildSingleFileLayout` rather than risk that warning.
+ * more spans or text characters than these is rejected with a user-visible warning. A plain
+ * single-column row stays well under both (2 spans), and a plain split row stays under both too
+ * (5 spans, two per column plus the separator) — but search-hit splitting can add several spans
+ * to any one row, so both builds count their exact totals and drop hit-splitting (then, for
+ * split, drop the split presentation itself) rather than risk that warning on a large file with a
+ * common query.
  */
 const SPLIT_MAX_SPANS = 40_000;
 const SPLIT_MAX_CHARS = 1_000_000;
+
+/** Sum every row's span count across a built layout. */
+function countSpans(rows: readonly ExtensionFileViewRow[]): number {
+  return rows.reduce((sum, row) => sum + row.spans.length, 0);
+}
+
+/** Sum every row's total span text length across a built layout. */
+function countChars(rows: readonly ExtensionFileViewRow[]): number {
+  return rows.reduce((sum, row) => sum + row.spans.reduce((s, span) => s + span.text.length, 0), 0);
+}
+
+/** Whether a built layout's rows fit inside hunk's layout-validator caps. */
+function withinLayoutCaps(rows: readonly ExtensionFileViewRow[]): boolean {
+  return countSpans(rows) <= SPLIT_MAX_SPANS && countChars(rows) <= SPLIT_MAX_CHARS;
+}
 
 /** How to lay the file view out: hunk's own diff-column width, when known. */
 export interface FullFileViewOptions {
@@ -106,6 +123,9 @@ function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[],
     const tone: ExtensionFileViewSpan["tone"] | undefined = kind === "added" ? "added" : kind === "removed" ? "removed" : undefined;
     // Search hits attribute to the new side for context/added lines and the old side for
     // removed lines, exactly like `scanPatchHits`/`scanDocumentHits`.
+    // A removed row's text is still checked against the query and painted when it matches, but
+    // `scanDocumentHits` (the full-view hit count `n`/`p` navigate) only scans the new-side
+    // document — a removed-line match is visible here but is not one of the navigable hits.
     const rowSide: "old" | "new" = kind === "removed" ? "old" : "new";
     const rowLine = kind === "removed" ? oldLine : newLine;
     const hitRanges = hits && rowLine !== null ? findLineHits(text, hits.query) : [];
@@ -157,6 +177,10 @@ function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[],
     nextNew += 1;
   }
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
+  // Hit-splitting can push any one row well past its plain 2-span shape; on a large file with a
+  // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
+  // rather than risk the warning hunk shows for an over-cap layout.
+  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks);
   return { rows, hunkRows };
 }
 
@@ -308,7 +332,8 @@ function pushSplitRow(
 }
 
 /**
- * Two columns (old | new), following hunk's own resolved split layout.
+ * Two columns (old | new), following hunk's own resolved split layout. Pure row construction —
+ * `buildSplitFileLayout` below decides whether the result fits hunk's layout caps.
  *
  * Runs `buildEntries` for the flattened file, then regroups each hunk's entries: a run of
  * removed lines immediately followed by a run of added lines pairs index-wise (leftovers get a
@@ -316,7 +341,7 @@ function pushSplitRow(
  * sides. `sourceRanges` is attached only inside a hunk, on both sides for a paired or context
  * row and on the one present side for a leftover row.
  */
-function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
+function buildSplitRows(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
   const built = buildEntries(newDocument, hunks);
   if (built === null) return null;
   const { entries, hunkEntryRanges, gutterWidthOld, gutterWidthNew } = built;
@@ -384,11 +409,22 @@ function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], 
   }
 
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
-  // Every split row carries 5 spans (gutter + content per column, plus the separator) and up to
-  // 2 * colWidth + 3 characters; over hunk's layout caps that would draw a warning instead of the
-  // view, so a file too big or a terminal too wide for two columns keeps the single-column build.
-  if (rows.length * 5 > SPLIT_MAX_SPANS || rows.length * (2 * colWidth + 3) > SPLIT_MAX_CHARS) {
-    return buildSingleFileLayout(newDocument, hunks, hits);
-  }
   return { rows, hunkRows };
+}
+
+/**
+ * `buildSplitRows` plus the layout-cap fallback chain: hit-splitting can push any row past its
+ * plain shape (5 spans), so first try with hits, then retry the same split columns without
+ * hit-splitting, and only then give up the split presentation for a plain single column — a file
+ * too big or a terminal too wide for two columns even without hits still needs that last step.
+ */
+function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
+  const withHits = buildSplitRows(newDocument, hunks, width, hits);
+  if (withHits === null) return null;
+  if (withinLayoutCaps(withHits.rows)) return withHits;
+  if (hits) {
+    const withoutHits = buildSplitRows(newDocument, hunks, width);
+    if (withoutHits !== null && withinLayoutCaps(withoutHits.rows)) return withoutHits;
+  }
+  return buildSingleFileLayout(newDocument, hunks);
 }
