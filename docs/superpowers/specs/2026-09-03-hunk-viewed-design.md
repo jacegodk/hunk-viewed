@@ -310,3 +310,33 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 ## 2026-09-07
 
 `N` selects the next unviewed file (retargets in single-file mode); `J`/`K` unchanged.
+
+---
+
+# Round 5 — 2026-09-08: content search
+
+## F. Search
+
+- **Prompt in the bottom bar.** A one-row pane `hunk-viewed:search` on the bottom edge, closed by
+  default. While the prompt is open it shows `Search: <draft>▏`; while a search is active it shows
+  `Search: <query>  <i>/<n> hits  <file of current hit>`; `no hits` when n is 0. Typing goes through
+  a keyboard mode `hunk-viewed:search-prompt` that consumes every key: printable characters append,
+  `backspace` deletes, `Enter` submits, `Esc` (host owned) cancels. An empty submit clears the search.
+- **Keys.** `ctrl+f` and `f3`: open the prompt when no search is active, otherwise next hit. `n`: next
+  hit. `p`, `shift+f3`, `ctrl+shift+f`: previous hit. Menu-only: "Edit search" (prompt with the
+  current query prefilled) and "Clear search". Hits wrap at the ends with a notice.
+- **Scan.** Case-insensitive substring. Visible files only. For a file in the normal diff: every
+  patch line (context and added lines on the new side, removed lines on the old side), every
+  occurrence in a line. For a file showing the full-file view: every line of the new-side document,
+  computed inside the view's layout pass because only that pass can read the document. Hits are
+  ordered by review order, then line, then column.
+- **Show.** A line highlighter `hunk-viewed:search` marks each hit's exact character range with tone
+  `match`, and the current hit with `current`. In the full-file view the row spans are split so hit
+  text gets tone `accent`, the current hit additionally `bold`. The current hit is revealed with
+  `revealLine`.
+- **Updates.** The hit list is rebuilt and the current index re-clamped on `filter_changed`,
+  `changeset_loaded`, `session_reload`, entering or leaving single-file mode, and toggling the full
+  view. The extension tracks which files show the full view through its own `F` command.
+- **Limits.** No regex. Full-view hits use the accent color, not hunk's search tones. A hit inside
+  collapsed context lands on its hunk (hunk's `revealLine` fallback). A full view applied through
+  hunk's menu rather than `F` counts as a diff-only file until `F` is pressed on it.
