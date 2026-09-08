@@ -157,10 +157,23 @@ export function setQuery(query: string): void {
   publish({ query, hits: [], currentIndex: -1 });
 }
 
-/** Store the full-file view's reported hits for one file; the caller rebuilds hits next. */
-export function setDocumentHits(fileId: string, hits: readonly SearchHit[]): void {
+/** Whether two hit lists address the same (side, line, range) set, in the same order. */
+function sameHitRanges(a: readonly SearchHit[], b: readonly SearchHit[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((hit, i) => hit.side === b[i]!.side && hit.line === b[i]!.line && hit.range[0] === b[i]!.range[0] && hit.range[1] === b[i]!.range[1]);
+}
+
+/**
+ * Store the full-file view's reported hits for one file; the caller rebuilds hits next.
+ * Returns whether the stored hits actually changed (by side/line/range), so a caller that only
+ * wants to rebuild the merged list when it would actually change (the view's `layout` pass) can
+ * skip a redundant rebuild.
+ */
+export function setDocumentHits(fileId: string, hits: readonly SearchHit[]): boolean {
+  const changed = !sameHitRanges(documentHits.get(fileId) ?? [], hits);
   documentHits.set(fileId, hits);
   publish({});
+  return changed;
 }
 
 /** Toggle whether a file shows the full-file view for search-scanning purposes. */
@@ -169,6 +182,28 @@ export function toggleFullViewFile(fileId: string): void {
   if (next.has(fileId)) next.delete(fileId);
   else next.add(fileId);
   publish({ fullViewFileIds: next });
+}
+
+/** Set whether a file shows the full-file view for search-scanning purposes. */
+export function setFullViewFile(fileId: string, active: boolean): void {
+  const next = new Set(state.fullViewFileIds);
+  if (active) next.add(fileId);
+  else next.delete(fileId);
+  publish({ fullViewFileIds: next });
+}
+
+/**
+ * Drop full-view membership and reported document hits for files no longer in `ids`, after
+ * `changeset_loaded`/`session_reload` replace the file list wholesale (hunk renumbers ids on
+ * every reload, so anything keyed by a prior generation's id is otherwise a permanent leak).
+ */
+export function pruneSearchFiles(ids: Iterable<string>): void {
+  const keep = new Set(ids);
+  for (const id of documentHits.keys()) {
+    if (!keep.has(id)) documentHits.delete(id);
+  }
+  const nextFullView = new Set([...state.fullViewFileIds].filter((id) => keep.has(id)));
+  if (nextFullView.size !== state.fullViewFileIds.size) publish({ fullViewFileIds: nextFullView });
 }
 
 /** Clamp a raw index into `[0, length - 1]`, or -1 when there is nothing to point at. */

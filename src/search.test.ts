@@ -8,11 +8,13 @@ import {
   findLineHits,
   getSearchState,
   openPrompt,
+  pruneSearchFiles,
   rebuildHits,
   resetSearchForTests,
   scanDocumentHits,
   scanPatchHits,
   setDocumentHits,
+  setFullViewFile,
   setQuery,
   stepHit,
   toggleFullViewFile,
@@ -136,6 +138,62 @@ describe("toggleFullViewFile", () => {
     expect(getSearchState().fullViewFileIds.has("f1")).toBe(true);
     toggleFullViewFile("f1");
     expect(getSearchState().fullViewFileIds.has("f1")).toBe(false);
+  });
+});
+
+describe("setFullViewFile", () => {
+  test("sets membership directly instead of toggling", () => {
+    setFullViewFile("f1", true);
+    expect(getSearchState().fullViewFileIds.has("f1")).toBe(true);
+    setFullViewFile("f1", true); // idempotent
+    expect(getSearchState().fullViewFileIds.has("f1")).toBe(true);
+    setFullViewFile("f1", false);
+    expect(getSearchState().fullViewFileIds.has("f1")).toBe(false);
+  });
+});
+
+describe("setDocumentHits", () => {
+  test("returns true the first time a file reports hits", () => {
+    expect(setDocumentHits("f1", [{ fileId: "f1", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }])).toBe(true);
+  });
+
+  test("returns false when the reported hits are the same (by side/line/range) as before", () => {
+    const hits = [{ fileId: "f1", filePath: "a.ts", side: "new" as const, line: 1, range: [0, 3] as const }];
+    setDocumentHits("f1", hits);
+    // A fresh array with the same side/line/range content is not a change.
+    expect(setDocumentHits("f1", [{ ...hits[0]! }])).toBe(false);
+  });
+
+  test("returns true when the count or any hit's side/line/range differs", () => {
+    setDocumentHits("f1", [{ fileId: "f1", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }]);
+    expect(setDocumentHits("f1", [])).toBe(true);
+    setDocumentHits("f1", [{ fileId: "f1", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }]);
+    expect(setDocumentHits("f1", [{ fileId: "f1", filePath: "a.ts", side: "new", line: 2, range: [0, 3] }])).toBe(true);
+  });
+});
+
+describe("pruneSearchFiles", () => {
+  test("drops fullViewFileIds and document hits for files no longer in the changeset", () => {
+    setFullViewFile("a", true);
+    setFullViewFile("b", true);
+    setDocumentHits("a", [{ fileId: "a", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }]);
+    setDocumentHits("b", [{ fileId: "b", filePath: "b.ts", side: "new", line: 1, range: [0, 3] }]);
+
+    pruneSearchFiles(["b"]); // only "b" survives the reload
+
+    expect(getSearchState().fullViewFileIds).toEqual(new Set(["b"]));
+    // "a"'s document hits are gone: rebuilding with "a" back in the visible set (a fresh object,
+    // as a reload would give it) reports no full-view hits for it even though it is still marked.
+    setFullViewFile("a", true);
+    rebuildHits([file("a", "a.ts", "@@ -1,1 +1,1 @@\n foo\n")]);
+    expect(getSearchState().hits).toEqual([]);
+  });
+
+  test("is a no-op (no republish) when nothing needs pruning", () => {
+    setFullViewFile("a", true);
+    const before = getSearchState();
+    pruneSearchFiles(["a", "b"]);
+    expect(getSearchState()).toBe(before);
   });
 });
 
