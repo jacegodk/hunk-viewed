@@ -78,7 +78,8 @@ the bar.
 The search scans visible files only: patch lines (context and added text on the new side, removed
 text on the old side) for a normal diff file, or the whole new-side document for a file currently
 showing the full file view (`F`). Hiding a file with hunk's filter, entering single-file mode, or
-toggling the full file view changes what is scanned and the hit count with it.
+toggling the full file view changes what is scanned and the hit count with it. Files marked viewed
+are not searched; press `v` to unmark and include them.
 
 Hits are highlighted on their exact matched characters, the current hit stronger than the rest. In
 the full file view hits use the accent color instead of hunk's own search tones. `n` or `ctrl+f`/`f3`
@@ -118,7 +119,8 @@ end with a notice.
   and `ctrl+shift+f` acts as `ctrl+f`. If a newer hunk binds `n` to "next note" by default, it warns
   at startup and refuses this extension's `n`; rebind `hunk-viewed.searchNext` when that happens. A
   full view applied from hunk's own View menu instead of `F` does not count as a full view for
-  search until `F` is pressed on that file.
+  search until `F` is pressed on that file. Files marked viewed are not searched; press `v` to
+  unmark and include them.
 
 ## Development
 

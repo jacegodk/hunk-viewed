@@ -328,8 +328,9 @@ The pane's `✓` uses `theme.badgeAdded` (the `+N` green) instead of `accentMute
 - **Scan.** Case-insensitive substring. Visible files only. For a file in the normal diff: every
   patch line (context and added lines on the new side, removed lines on the old side), every
   occurrence in a line. For a file showing the full-file view: every line of the new-side document,
-  computed inside the view's layout pass because only that pass can read the document. Hits are
-  ordered by review order, then line, then column.
+  computed inside the view's layout pass because only that pass can read the document. Files marked
+  viewed are not searched; press `v` to unmark and include them. Hits are ordered by review order,
+  then line, then column.
 - **Show.** A line highlighter `hunk-viewed:search` marks each hit's exact character range with tone
   `match`, and the current hit with `current`. In the full-file view the row spans are split so hit
   text gets tone `accent`, the current hit additionally `bold`. The current hit is revealed with
