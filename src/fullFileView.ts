@@ -61,8 +61,8 @@ export interface FullFileViewOptions {
   /** Active search query and current pick, so rows can mark hit text as they render. */
   hits?: { query: string; current: SearchHit | null };
   /**
-   * The old-side document, when readable. Lets removed rows reference it for syntax paint; the
-   * new side is always declared. Without it, removed rows keep their flat `removed` tone.
+   * The old-side document, when readable. Lets the old column of a split context row reference
+   * it for syntax paint; the new side is always declared.
    */
   oldDocument?: string | null;
 }
@@ -117,9 +117,14 @@ function syntaxRef(
   return range ? { documentId: side, line, range } : { documentId: side, line };
 }
 
-/** A span of row content: toned like its row, and painted by hunk's highlighter when `syntax` resolves. */
+/**
+ * A span of row content: toned like its row, and painted by hunk's highlighter when `syntax`
+ * resolves. Only untoned (context) spans take a reference: hunk's token colors override `tone`
+ * and it paints no added/removed background on file-view rows, so a highlighted change line
+ * would look like context with a marker. Changed lines stay solid green and red instead.
+ */
 function contentSpan(text: string, tone: ExtensionFileViewSpan["tone"], syntax?: ExtensionFileViewSyntaxReference): ExtensionFileViewSpan {
-  return { text, ...(tone ? { tone } : {}), ...(syntax ? { syntax } : {}) };
+  return { text, ...(tone ? { tone } : {}), ...(syntax && !tone ? { syntax } : {}) };
 }
 
 /** Add `codeDocuments` to a built layout when syntax paint is on. */

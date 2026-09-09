@@ -158,7 +158,7 @@ describe("buildFullFileLayout split columns", () => {
       { text: " │ ", tone: "muted" },
       { text: "2 ", tone: "muted" },
       { text: "+ ", tone: "added" },
-      { text: "line two changed", tone: "added", syntax: { documentId: "new", line: 2 } },
+      { text: "line two changed", tone: "added" },
       { text: "  ", tone: "added" },
     ]);
     // A context row shows the same text on both sides.
@@ -318,7 +318,7 @@ describe("buildFullFileLayout search hits", () => {
       { text: "1 ", tone: "muted" },
       { text: "+ ", tone: "added" },
       { text: "foo", tone: "accent", attributes: ["bold"] },
-      { text: " bar", tone: "added", syntax: { documentId: "new", line: 1, range: [3, 7] } },
+      { text: " bar", tone: "added" },
       { text: "           ", tone: "added" },
     ]);
     expect(layout!.rows[0]!.spans[5]).toEqual({ text: " │ ", tone: "muted" });
@@ -363,39 +363,44 @@ describe("buildFullFileLayout syntax paint (API 24)", () => {
   const oldDocument = ["line one", "line two", "line three", "line four", "line five", "line six"].join("\n") + "\n";
   const hunks = parseUnifiedPatch(patch.replace("-2,3 +2,3", "-1,3 +1,3"));
 
-  test("single column: declares the new document; context and added rows reference it, removed rows stay flat without an old document", () => {
+  test("single column: declares the new document; context rows reference it, changed rows keep their solid tone", () => {
     const layout = buildFullFileLayout(newDocument, hunks);
     expect(layout).not.toBeNull();
     expect(layout!.codeDocuments).toEqual([{ id: "new", text: newDocument }]);
     // Context row 1: gutter, marker, text referencing new line 1.
     expect(layout!.rows[0]!.spans).toEqual([{ text: "1 ", tone: "muted" }, { text: "  " }, { text: "line one", syntax: { documentId: "new", line: 1 } }]);
-    // Removed row: no old document, so no reference; tone kept on marker and text.
+    // Removed and added rows: solid tone on marker and text, no reference, so hunk's token
+    // colors cannot wash out the change (hunk paints no added/removed background on file views).
     expect(layout!.rows[1]!.spans).toEqual([{ text: "  ", tone: "muted" }, { text: "- ", tone: "removed" }, { text: "line two", tone: "removed" }]);
-    // Added row: toned, and referencing the new line it shows.
     expect(layout!.rows[2]!.spans).toEqual([
       { text: "2 ", tone: "muted" },
       { text: "+ ", tone: "added" },
-      { text: "line two changed", tone: "added", syntax: { documentId: "new", line: 2 } },
+      { text: "line two changed", tone: "added" },
     ]);
-    expect(syntaxSpans(layout!)).toHaveLength(6);
+    expect(syntaxSpans(layout!)).toHaveLength(5);
     expectValidFileViewLayout(layout!, 2);
   });
 
-  test("with the old document, removed rows reference it; a removed line the old document does not contain stays flat", () => {
-    const layout = buildFullFileLayout(newDocument, hunks, { oldDocument });
+  test("with the old document, the old column of a split context row references it; a line the old document does not contain stays unreferenced", () => {
+    const layout = buildFullFileLayout(newDocument, hunks, { columns: "split", width: 48, oldDocument });
     expect(layout).not.toBeNull();
     expect(layout!.codeDocuments).toEqual([
       { id: "new", text: newDocument },
       { id: "old", text: oldDocument },
     ]);
-    expect(layout!.rows[1]!.spans[2]).toEqual({ text: "line two", tone: "removed", syntax: { documentId: "old", line: 2 } });
+    // Row 0 is context "line one" on both sides: old column → old document, new column → new.
+    expect(layout!.rows[0]!.spans[2]).toEqual({ text: "line one", syntax: { documentId: "old", line: 1 } });
+    expect(layout!.rows[0]!.spans[7]).toEqual({ text: "line one", syntax: { documentId: "new", line: 1 } });
+    // The removed/added pair stays solid, even with the old document available.
+    expect(layout!.rows[1]!.spans[2]).toEqual({ text: "line two", tone: "removed" });
     expectValidFileViewLayout(layout!, 2);
 
-    // The patch says old line 2 was "line two", but this old document disagrees: no reference,
-    // rather than a reference hunk would reject the layout over.
-    const stale = buildFullFileLayout(newDocument, hunks, { oldDocument: oldDocument.replace("line two", "something else") });
+    // An old document that disagrees with the diff's context: no reference on that side, rather
+    // than a reference hunk would reject the layout over.
+    const stale = buildFullFileLayout(newDocument, hunks, { columns: "split", width: 48, oldDocument: oldDocument.replace("line one", "something else") });
     expect(stale).not.toBeNull();
-    expect(stale!.rows[1]!.spans[2]).toEqual({ text: "line two", tone: "removed" });
+    expect(stale!.rows[0]!.spans[2]).toEqual({ text: "line one" });
+    expect(stale!.rows[0]!.spans[7]).toEqual({ text: "line one", syntax: { documentId: "new", line: 1 } });
     expectValidFileViewLayout(stale!, 2);
   });
 
@@ -424,9 +429,10 @@ describe("buildFullFileLayout syntax paint (API 24)", () => {
     ]);
     // Right (new) column: the same line on the new side, same shape.
     expect(layout!.rows[0]!.spans[7]).toEqual({ text: kept, syntax: { documentId: "new", line: 1, range: [0, 17] } });
-    // Row 1: a removed and an added line that both fit reference their whole line, no range.
-    expect(layout!.rows[1]!.spans[2]).toEqual({ text: "old", tone: "removed", syntax: { documentId: "old", line: 2 } });
-    expect(layout!.rows[1]!.spans[7]).toEqual({ text: "short", tone: "added", syntax: { documentId: "new", line: 2 } });
+    // A context line that fits references the whole line, no range.
+    const fits = buildFullFileLayout("short\nx\n", parseUnifiedPatch("@@ -2,1 +2,1 @@\n-y\n+x\n"), { columns: "split", width: 48, oldDocument: "short\ny\n" });
+    expect(fits!.rows[0]!.spans[2]).toEqual({ text: "short", syntax: { documentId: "old", line: 1 } });
+    expect(fits!.rows[0]!.spans[7]).toEqual({ text: "short", syntax: { documentId: "new", line: 1 } });
     expectValidFileViewLayout(layout!, 1);
   });
 
@@ -440,8 +446,7 @@ describe("buildFullFileLayout syntax paint (API 24)", () => {
     const newOnly = buildFullFileLayout(bigNew, hunk, { oldDocument: bigOld });
     expect(newOnly).not.toBeNull();
     expect(newOnly!.codeDocuments?.map((doc) => doc.id)).toEqual(["new"]);
-    expect(newOnly!.rows[0]!.spans[2]).toEqual({ text: "line 1", tone: "removed" });
-    expect(newOnly!.rows[1]!.spans[2]!.syntax).toEqual({ documentId: "new", line: 1 });
+    expect(newOnly!.rows[2]!.spans[2]!.syntax).toEqual({ documentId: "new", line: 2 });
     expectValidFileViewLayout(newOnly!, 1);
 
     // A new document over 1,000,000 UTF-16 units cannot be declared at all: no documents, no references.
@@ -450,7 +455,7 @@ describe("buildFullFileLayout syntax paint (API 24)", () => {
     expect(none).not.toBeNull();
     expect(none!.codeDocuments).toBeUndefined();
     expect(syntaxSpans(none!)).toHaveLength(0);
-    expect(none!.rows[1]!.spans[2]).toEqual({ text: "changed", tone: "added" });
+    expect(none!.rows[2]!.spans[2]).toEqual({ text: "x".repeat(1_000_000) });
   });
 
   test("a document with terminal controls or lone carriage returns gets no syntax paint", () => {

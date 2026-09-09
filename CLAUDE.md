@@ -68,8 +68,10 @@ older than 30 days, and renames a temp file over the target. Repo key is the rea
   new-side document plus the patch's removed lines. Single column or split (old | new). Returns `null`
   to fall back to the raw diff over 10,000 rows, when hunks disagree with the document, or when hunk's
   layout-validator span/char caps would be exceeded. Declares the new (and, when readable, old) document
-  as `codeDocuments` and gives each code span a `syntax` reference so hunk paints tokens; every reference
-  is verified against the document text first, because one mismatch makes hunk reject the whole layout.
+  as `codeDocuments` and gives each context code span a `syntax` reference so hunk paints tokens; added and
+  removed spans keep their solid tone, since token colors override `tone` and hunk paints no change
+  background on file views. Every reference is verified against the document text first, because one
+  mismatch makes hunk reject the whole layout.
 - `src/sidebar/`: the replacement files pane (`replaces: "hunk:files"`), ported from hunk's bundled
   sidebar (MIT, Modem Labs). `paneSource.ts` picks `allFiles` vs `files` depending on single-file mode.
   `SearchBar.tsx` is the one-row bottom pane.

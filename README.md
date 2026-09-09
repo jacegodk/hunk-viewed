@@ -107,10 +107,11 @@ end with a notice.
   long lines with `…`.
 - Syntax highlighting in the full-file view needs hunk's extension API 24 or newer
   (https://github.com/modem-dev/hunk/pull/1053, not in hunk 0.21.1 yet); older hunks show it in one
-  color. hunk paints the tokens; added and removed rows keep only their `+`/`-` marker and gaps in
-  the row's green or red, with no background tint. Removed rows are highlighted only when the old
-  side is readable. A file with terminal control characters, or where old and new side together
-  exceed 10,000 lines or 1,000,000 characters, loses the old side first and then all highlighting.
+  color. Only unchanged lines are highlighted. Added and removed lines stay solid green and red,
+  because hunk's token colors would replace that color and hunk paints no green or red background
+  on file-view rows. In split layout the old column needs a readable old side for highlighting. A
+  file with terminal control characters, or where old and new side together exceed 10,000 lines or
+  1,000,000 characters, loses the old side first and then all highlighting.
 - hunk announces its split/stack layout to extensions only when it changes. Until then the
   full-file view guesses split when the review body is at least 116 columns wide, which matches
   hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,
