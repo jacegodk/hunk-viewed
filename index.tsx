@@ -1,10 +1,10 @@
 /**
  * hunk-viewed: GitLab-style "viewed" marks for hunk.
  *
- * `v` marks the selected file, folds it, and stays selected; on a viewed file it clears the
+ * `V` marks the selected file, folds it, and stays selected; on a viewed file it clears the
  * mark, unfolds it, and stays. `F` toggles the full-file view: the whole file as a diff with
  * unlimited context. `J` / `K` move to the next/previous file, walking every visible file in
- * every mode; viewed files are never skipped. `N` jumps to the next unviewed file, retargeting
+ * every mode; viewed files are never skipped. `U` jumps to the next unviewed file, retargeting
  * instead of selecting while single-file mode is active. `o` toggles single-file mode, which shows only
  * one file at a time; inside it `,`/`.` retarget the previous/next file and `Enter` loads a file
  * clicked in the pane, with `J`/`K` retargeting instead of jumping the full review. Marks
@@ -12,7 +12,7 @@
  * hunk's files pane and shows marks and progress.
  *
  * `ctrl+f`/`f3` open the bottom-bar search prompt, or jump to the next hit when a search is
- * already active; `n`/`p` step to the next/previous hit. Matches are painted by a line highlighter
+ * already active; `ctrl+n`/`ctrl+p` step to the next/previous hit. Matches are painted by a line highlighter
  * in the normal diff and as accent spans in the full-file view; viewed files are excluded from
  * the scan.
  */
@@ -386,7 +386,7 @@ export default function (hunk: HunkExtensionAPI) {
       // Report this file's whole-document hits regardless of whether the layout above rendered:
       // the document was read successfully either way, and `F` (not a successful layout) is what
       // decides whether search treats this file as full-view. A rebuild is the only way the merged
-      // `hits` list (what the bottom bar's counter and `n`/`p` walk) ever learns about a full-view
+      // `hits` list (what the bottom bar's counter and `ctrl+n`/`ctrl+p` walk) ever learns about a full-view
       // file's hits at all — nothing else calls `rebuildHits` when this async layout resolves —
       // so skip it only when the reported hits didn't actually change.
       const changed = setDocumentHits(input.file.id, scanDocumentHits(input.file, document, searchState.query));
@@ -414,7 +414,7 @@ export default function (hunk: HunkExtensionAPI) {
     }
   });
 
-  hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "v" }, (ctx) => {
+  hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "V" }, (ctx) => {
     const file = ctx.selection.file;
     if (!file) {
       ctx.notify("No file selected", "info");
@@ -470,7 +470,7 @@ export default function (hunk: HunkExtensionAPI) {
     jumpFile(ctx, -1),
   );
 
-  hunk.registerCommand({ id: "skipToUnviewed", title: "Next unviewed file", key: "N" }, (ctx) =>
+  hunk.registerCommand({ id: "skipToUnviewed", title: "Next unviewed file", key: "U" }, (ctx) =>
     jumpTo(ctx, 1, (file) => isViewed(getViewedState(), file), () => "No unviewed file after this one"),
   );
 
@@ -623,9 +623,9 @@ export default function (hunk: HunkExtensionAPI) {
     return runPrompt(ctx, "");
   });
 
-  hunk.registerCommand({ id: "searchNext", title: "Next hit", key: "n" }, (ctx) => moveHit(ctx, 1));
+  hunk.registerCommand({ id: "searchNext", title: "Next hit", key: "ctrl+n" }, (ctx) => moveHit(ctx, 1));
 
-  hunk.registerCommand({ id: "searchPrevious", title: "Previous hit", key: ["p", "shift+f3", "ctrl+shift+f"] }, (ctx) => moveHit(ctx, -1));
+  hunk.registerCommand({ id: "searchPrevious", title: "Previous hit", key: ["ctrl+p", "shift+f3", "ctrl+shift+f"] }, (ctx) => moveHit(ctx, -1));
 
   hunk.registerCommand({ id: "searchEdit", title: "Edit search" }, (ctx) => runPrompt(ctx, getSearchState().query));
 

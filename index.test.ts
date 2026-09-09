@@ -249,16 +249,16 @@ describe("registration", () => {
     expect((fake.panes[1] as { id?: string; placement?: string }).id).toBe("search");
     expect((fake.panes[1] as { id?: string; placement?: string }).placement).toBe("bottom");
 
-    expect(fake.commands.get("toggleViewed")?.command.key).toBe("v");
+    expect(fake.commands.get("toggleViewed")?.command.key).toBe("V");
     expect(fake.commands.get("nextUnviewed")?.command.key).toBe("J");
     expect(fake.commands.get("previousUnviewed")?.command.key).toBe("K");
-    expect(fake.commands.get("skipToUnviewed")?.command.key).toBe("N");
+    expect(fake.commands.get("skipToUnviewed")?.command.key).toBe("U");
     expect(fake.commands.get("clearRepo")?.command.key).toBeUndefined();
     expect(fake.commands.get("foldViewed")?.command.key).toBeUndefined();
     expect(fake.commands.get("singleFile")?.command.key).toBe("o");
     expect(fake.commands.get("search")?.command.key).toEqual(["ctrl+f", "f3"]);
-    expect(fake.commands.get("searchNext")?.command.key).toBe("n");
-    expect(fake.commands.get("searchPrevious")?.command.key).toEqual(["p", "shift+f3", "ctrl+shift+f"]);
+    expect(fake.commands.get("searchNext")?.command.key).toBe("ctrl+n");
+    expect(fake.commands.get("searchPrevious")?.command.key).toEqual(["ctrl+p", "shift+f3", "ctrl+shift+f"]);
     expect(fake.commands.get("searchEdit")?.command.key).toBeUndefined();
     expect(fake.commands.get("searchClear")?.command.key).toBeUndefined();
 
@@ -659,7 +659,7 @@ describe("single-file mode", () => {
     setSingleFilePending("c.ts");
     expect(mode.onKey({ name: "enter" } as ExtensionKeyEvent, modeContext(calls))).toBe("handled");
     expect(getSingleFileState().targetPath).toBe("c.ts");
-    expect(mode.onKey({ name: "v" } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
+    expect(mode.onKey({ name: "V", shift: true } as ExtensionKeyEvent, modeContext(calls))).toBe("pass");
     expect(calls.executed.filter((id) => id === "hunk.app.refresh").length).toBe(3);
   });
 
@@ -1199,7 +1199,7 @@ describe("search", () => {
 
     expect(getSearchState().hits.map((h) => h.fileId)).toEqual(["1", "3"]); // "2" (viewed) excluded
 
-    // `v` unmarks "b.ts": the query is active, so the command rebuilds and refreshes just that file.
+    // `V` unmarks "b.ts": the query is active, so the command rebuilds and refreshes just that file.
     const unmarkCalls = createCalls();
     fake.commands.get("toggleViewed")!.handler(commandContext(files[1]!, [], [], unmarkCalls));
 

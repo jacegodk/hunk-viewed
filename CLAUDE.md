@@ -63,7 +63,7 @@ older than 30 days, and renames a temp file over the target. Repo key is the rea
 
 ### Presentation layers
 
-- `src/foldedView.ts`: one-row "✓ viewed" file view, selected for viewed files by `v`.
+- `src/foldedView.ts`: one-row "✓ viewed" file view, selected for viewed files by `V`.
 - `src/fullFileView.ts` + `src/unifiedPatch.ts`: rebuilds the whole file as a unified diff from the
   new-side document plus the patch's removed lines. Single column or split (old | new). Returns `null`
   to fall back to the raw diff over 10,000 rows, when hunks disagree with the document, or when hunk's
@@ -101,7 +101,9 @@ older than 30 days, and renames a temp file over the target. Repo key is the rea
 - `docs/superpowers/specs/2026-09-03-hunk-viewed-design.md` is the design record, appended per round.
   `docs/superpowers/plans/` holds the implementation plans that produced each round.
 - Command ids `nextUnviewed`/`previousUnviewed` are historical: they move to the next/previous file
-  and never skip viewed files. `N` (`skipToUnviewed`) skips.
+  and never skip viewed files. `U` (`skipToUnviewed`) skips.
+- Defaults avoid every key hunk 0.22 (`main` at the time) binds itself: `v`, `N`, `n` are taken there, so
+  the extension uses `V`, `U`, `ctrl+n`/`ctrl+p`. Check hunk's `commandCatalog.ts` before adding a key.
 
 ## Git
 
