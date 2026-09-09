@@ -1,4 +1,10 @@
-import type { ExtensionFileViewLayout, ExtensionFileViewRow, ExtensionFileViewSpan } from "hunkdiff/extension";
+import type {
+  ExtensionFileViewCodeDocument,
+  ExtensionFileViewLayout,
+  ExtensionFileViewRow,
+  ExtensionFileViewSpan,
+  ExtensionFileViewSyntaxReference,
+} from "hunkdiff/extension";
 import { fitText, padText, textWidth } from "./sidebar/text";
 import { findLineHits, sameHitLocation, type SearchHit } from "./search";
 import type { PatchHunk } from "./unifiedPatch";
@@ -20,6 +26,18 @@ const MIN_SPLIT_WIDTH = 48;
  */
 const SPLIT_MAX_SPANS = 40_000;
 const SPLIT_MAX_CHARS = 1_000_000;
+/**
+ * Hunk's code-document caps (API 24), aggregate over a layout's `codeDocuments`; a layout over
+ * either is rejected outright, so the documents are trimmed to fit before they are declared.
+ */
+const CODE_DOCUMENT_MAX_LINES = 10_000;
+const CODE_DOCUMENT_MAX_CHARS = 1_000_000;
+/**
+ * Terminal controls hunk strips from a code-document line before comparing a syntax span against
+ * it, plus a lone CR, which hunk treats as a line break and this file does not. Either would move
+ * the column ranges or line numbers the spans reference, so such a document gets no syntax paint.
+ */
+const UNSAFE_FOR_SYNTAX = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]|\r(?!\n)/u;
 
 /** Sum every row's span count across a built layout. */
 function countSpans(rows: readonly ExtensionFileViewRow[]): number {
@@ -42,6 +60,71 @@ export interface FullFileViewOptions {
   width?: number;
   /** Active search query and current pick, so rows can mark hit text as they render. */
   hits?: { query: string; current: SearchHit | null };
+  /**
+   * The old-side document, when readable. Lets removed rows reference it for syntax paint; the
+   * new side is always declared. Without it, removed rows keep their flat `removed` tone.
+   */
+  oldDocument?: string | null;
+}
+
+/** The code documents a layout declares for hunk's syntax paint, with their lines for exact-text checks. */
+interface SyntaxDocuments {
+  codeDocuments: ExtensionFileViewCodeDocument[];
+  lines: { readonly new: readonly string[]; readonly old: readonly string[] | null };
+}
+
+/**
+ * Decide which documents to declare: the new side, plus the old side when the caller read it. The
+ * old side is dropped first, then syntax paint altogether, when hunk's aggregate line/length caps
+ * would reject the layout; a document with controls hunk would strip gets no syntax paint either.
+ */
+function resolveSyntaxDocuments(newDocument: string, newLines: readonly string[], oldDocument: string | null | undefined): SyntaxDocuments | null {
+  if (UNSAFE_FOR_SYNTAX.test(newDocument)) return null;
+  const fits = (lineCount: number, ...texts: string[]) =>
+    lineCount <= CODE_DOCUMENT_MAX_LINES && texts.reduce((sum, text) => sum + text.length, 0) <= CODE_DOCUMENT_MAX_CHARS;
+  if (oldDocument != null && !UNSAFE_FOR_SYNTAX.test(oldDocument)) {
+    const oldLines = documentLines(oldDocument);
+    if (fits(newLines.length + oldLines.length, newDocument, oldDocument)) {
+      return {
+        codeDocuments: [
+          { id: "new", text: newDocument },
+          { id: "old", text: oldDocument },
+        ],
+        lines: { new: newLines, old: oldLines },
+      };
+    }
+  }
+  if (!fits(newLines.length, newDocument)) return null;
+  return { codeDocuments: [{ id: "new", text: newDocument }], lines: { new: newLines, old: null } };
+}
+
+/**
+ * A syntax reference for `text` shown at `(side, line)`, or undefined when hunk would reject it:
+ * the side was not declared, or `text` is not exactly that document line (or `range` of it).
+ * Hunk rejects the whole layout on a mismatch, so an unverifiable span is left unpainted instead.
+ */
+function syntaxRef(
+  docs: SyntaxDocuments | null,
+  side: "old" | "new",
+  line: number,
+  text: string,
+  range?: readonly [number, number],
+): ExtensionFileViewSyntaxReference | undefined {
+  const sourceLine = docs?.lines[side]?.[line - 1];
+  if (sourceLine === undefined) return undefined;
+  if (range && range[1] > sourceLine.length) return undefined;
+  if ((range ? sourceLine.slice(range[0], range[1]) : sourceLine) !== text) return undefined;
+  return range ? { documentId: side, line, range } : { documentId: side, line };
+}
+
+/** A span of row content: toned like its row, and painted by hunk's highlighter when `syntax` resolves. */
+function contentSpan(text: string, tone: ExtensionFileViewSpan["tone"], syntax?: ExtensionFileViewSyntaxReference): ExtensionFileViewSpan {
+  return { text, ...(tone ? { tone } : {}), ...(syntax ? { syntax } : {}) };
+}
+
+/** Add `codeDocuments` to a built layout when syntax paint is on. */
+function withCodeDocuments(layout: ExtensionFileViewLayout, docs: SyntaxDocuments | null): ExtensionFileViewLayout {
+  return docs ? { ...layout, codeDocuments: docs.codeDocuments } : layout;
 }
 
 /** Whether `range` on `(side, line)` is the search's current pick, for the bold accent mark. */
@@ -51,8 +134,10 @@ function isCurrentHit(current: SearchHit | null | undefined, side: "old" | "new"
 
 /**
  * Split `text` into spans at every hit in `ranges` (already located in `text`): plain runs keep
- * `tone`, each hit becomes `accent` (bold too for the current pick). Assumes `ranges` is
- * non-empty; callers fall back to a merged single span otherwise so unrelated rows are unchanged.
+ * `tone` and reference their slice of the source line for syntax paint, each hit becomes `accent`
+ * (bold too for the current pick) with no syntax reference, so hunk's token color cannot override
+ * the hit color. `text` must start at column 0 of the source line. Assumes `ranges` is non-empty;
+ * callers fall back to a merged single span otherwise so unrelated rows are unchanged.
  */
 function splitHitContentSpans(
   marker: string,
@@ -62,11 +147,13 @@ function splitHitContentSpans(
   line: number,
   ranges: readonly (readonly [number, number])[],
   current: SearchHit | null | undefined,
+  docs: SyntaxDocuments | null,
 ): ExtensionFileViewSpan[] {
-  const spans: ExtensionFileViewSpan[] = [tone ? { text: `${marker} `, tone } : { text: `${marker} ` }];
+  const spans: ExtensionFileViewSpan[] = [contentSpan(`${marker} `, tone)];
+  const plain = (start: number, end: number) => contentSpan(text.slice(start, end), tone, syntaxRef(docs, side, line, text.slice(start, end), [start, end]));
   let cursor = 0;
   for (const [start, end] of ranges) {
-    if (start > cursor) spans.push(tone ? { text: text.slice(cursor, start), tone } : { text: text.slice(cursor, start) });
+    if (start > cursor) spans.push(plain(cursor, start));
     spans.push(
       isCurrentHit(current, side, line, [start, end])
         ? { text: text.slice(start, end), tone: "accent", attributes: ["bold"] }
@@ -74,7 +161,7 @@ function splitHitContentSpans(
     );
     cursor = end;
   }
-  if (cursor < text.length) spans.push(tone ? { text: text.slice(cursor), tone } : { text: text.slice(cursor) });
+  if (cursor < text.length) spans.push(plain(cursor, text.length));
   return spans;
 }
 
@@ -104,15 +191,21 @@ function documentLines(document: string): string[] {
 export function buildFullFileLayout(newDocument: string, hunks: readonly PatchHunk[], options?: FullFileViewOptions): ExtensionFileViewLayout | null {
   if (hunks.length === 0) return null;
   if (options?.columns === "split" && options.width !== undefined && options.width >= MIN_SPLIT_WIDTH) {
-    return buildSplitFileLayout(newDocument, hunks, options.width, options.hits);
+    return buildSplitFileLayout(newDocument, hunks, options.width, options.hits, options.oldDocument);
   }
-  return buildSingleFileLayout(newDocument, hunks, options?.hits);
+  return buildSingleFileLayout(newDocument, hunks, options?.hits, options?.oldDocument);
 }
 
 /** One full-width column, unlimited context, unchanged from the pre-split implementation. */
-function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[], hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
+function buildSingleFileLayout(
+  newDocument: string,
+  hunks: readonly PatchHunk[],
+  hits?: FullFileViewOptions["hits"],
+  oldDocument?: string | null,
+): ExtensionFileViewLayout | null {
   const lines = documentLines(newDocument);
   if (lines.length > FULL_VIEW_MAX_ROWS) return null;
+  const docs = resolveSyntaxDocuments(newDocument, lines, oldDocument);
   const gutterWidth = String(Math.max(1, lines.length)).length;
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
@@ -129,12 +222,15 @@ function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[],
     const rowSide: "old" | "new" = kind === "removed" ? "old" : "new";
     const rowLine = kind === "removed" ? oldLine : newLine;
     const hitRanges = hits && rowLine !== null ? findLineHits(text, hits.query) : [];
+    // The marker is its own span so the row's tone stays visible on it when syntax paint colors
+    // the text; an empty line adds no content span.
     const spans: ExtensionFileViewSpan[] =
       hitRanges.length > 0
-        ? [{ text: `${number} `, tone: "muted" }, ...splitHitContentSpans(marker, text, tone, rowSide, rowLine!, hitRanges, hits?.current)]
+        ? [{ text: `${number} `, tone: "muted" }, ...splitHitContentSpans(marker, text, tone, rowSide, rowLine!, hitRanges, hits?.current, docs)]
         : [
             { text: `${number} `, tone: "muted" },
-            tone ? { text: `${marker} ${text}`, tone } : { text: `${marker} ${text}` },
+            contentSpan(`${marker} `, tone),
+            ...(text === "" ? [] : [contentSpan(text, tone, rowLine === null ? undefined : syntaxRef(docs, rowSide, rowLine, text))]),
           ];
     const sourceRanges =
       inHunk && newLine !== null
@@ -180,8 +276,8 @@ function buildSingleFileLayout(newDocument: string, hunks: readonly PatchHunk[],
   // Hit-splitting can push any one row well past its plain 2-span shape; on a large file with a
   // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
   // rather than risk the warning hunk shows for an over-cap layout.
-  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks);
-  return { rows, hunkRows };
+  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
 /** One line of the rebuilt file, before it is rendered as a single- or split-column row. */
@@ -196,6 +292,8 @@ interface FullFileEntry {
 /** `buildEntries` output: the flattened file, hunk boundaries within it, and both gutter widths. */
 interface FullFileEntries {
   entries: FullFileEntry[];
+  /** The new-side document's lines, as walked. */
+  lines: readonly string[];
   /** Inclusive entry-index range covered by each hunk, ordered to match `hunks`. */
   hunkEntryRanges: { start: number; end: number }[];
   gutterWidthOld: number;
@@ -269,6 +367,7 @@ function buildEntries(newDocument: string, hunks: readonly PatchHunk[]): FullFil
   if (entries.length > FULL_VIEW_MAX_ROWS) return null;
   return {
     entries,
+    lines,
     hunkEntryRanges,
     gutterWidthOld: String(Math.max(1, maxOldLine)).length,
     gutterWidthNew: String(Math.max(1, lines.length)).length,
@@ -285,11 +384,19 @@ interface SplitCell {
 
 /**
  * Render one column (gutter + marker + fitted text, padded to `colWidth`).
- * Hits are located inside the already-`fitText`-truncated text, so a hit past the truncation
- * point is simply not there to find; when one is, its own span replaces the merged content span
- * and a final plain span restores the padding `padText` would otherwise have added.
+ * `fitText` keeps a code-point prefix of the line and appends the one-unit `…` when it cuts, so
+ * that prefix is still an exact slice of the source line hunk can paint; the marker and the
+ * padding after it go in a trailing span of their own. Hits are located inside the kept prefix,
+ * so a hit past the truncation point is simply not there to find.
  */
-function renderColumn(cell: SplitCell | null, gutterWidth: number, colWidth: number, side: "old" | "new", hits: FullFileViewOptions["hits"]): ExtensionFileViewSpan[] {
+function renderColumn(
+  cell: SplitCell | null,
+  gutterWidth: number,
+  colWidth: number,
+  side: "old" | "new",
+  hits: FullFileViewOptions["hits"],
+  docs: SyntaxDocuments | null,
+): ExtensionFileViewSpan[] {
   const contentWidth = Math.max(0, colWidth - gutterWidth - 1);
   if (cell === null) {
     return [
@@ -299,17 +406,18 @@ function renderColumn(cell: SplitCell | null, gutterWidth: number, colWidth: num
   }
   const gutterText = String(cell.lineNumber).padStart(gutterWidth) + " ";
   const fitted = fitText(cell.text, Math.max(0, contentWidth - 2), "…");
-  const hitRanges = hits ? findLineHits(fitted, hits.query) : [];
-  if (hitRanges.length === 0) {
-    const content = padText(`${cell.marker} ${fitted}`, contentWidth);
-    return [
-      { text: gutterText, tone: "muted" },
-      cell.tone ? { text: content, tone: cell.tone } : { text: content },
-    ];
-  }
-  const contentSpans = splitHitContentSpans(cell.marker, fitted, cell.tone, side, cell.lineNumber, hitRanges, hits?.current);
-  const padWidth = Math.max(0, contentWidth - textWidth(`${cell.marker} ${fitted}`));
-  if (padWidth > 0) contentSpans.push({ text: " ".repeat(padWidth) });
+  const truncated = fitted !== cell.text && fitted.endsWith("…");
+  const kept = truncated ? fitted.slice(0, -1) : fitted;
+  const hitRanges = hits ? findLineHits(kept, hits.query) : [];
+  const contentSpans =
+    hitRanges.length === 0
+      ? [
+          contentSpan(`${cell.marker} `, cell.tone),
+          ...(kept === "" ? [] : [contentSpan(kept, cell.tone, syntaxRef(docs, side, cell.lineNumber, kept, kept === cell.text ? undefined : [0, kept.length]))]),
+        ]
+      : splitHitContentSpans(cell.marker, kept, cell.tone, side, cell.lineNumber, hitRanges, hits?.current, docs);
+  const tail = (truncated ? "…" : "") + " ".repeat(Math.max(0, contentWidth - textWidth(`${cell.marker} ${fitted}`)));
+  if (tail !== "") contentSpans.push(contentSpan(tail, cell.tone));
   return [{ text: gutterText, tone: "muted" }, ...contentSpans];
 }
 
@@ -322,11 +430,12 @@ function pushSplitRow(
   left: SplitCell | null,
   right: SplitCell | null,
   hits: FullFileViewOptions["hits"],
+  docs: SyntaxDocuments | null,
 ) {
   const spans: ExtensionFileViewSpan[] = [
-    ...renderColumn(left, gutterWidthOld, colWidth, "old", hits),
+    ...renderColumn(left, gutterWidthOld, colWidth, "old", hits, docs),
     { text: " │ ", tone: "muted" },
-    ...renderColumn(right, gutterWidthNew, colWidth, "new", hits),
+    ...renderColumn(right, gutterWidthNew, colWidth, "new", hits, docs),
   ];
   rows.push({ id: `full:${rows.length}`, spans });
 }
@@ -341,10 +450,17 @@ function pushSplitRow(
  * sides. `sourceRanges` is attached only inside a hunk, on both sides for a paired or context
  * row and on the one present side for a leftover row.
  */
-function buildSplitRows(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
+function buildSplitRows(
+  newDocument: string,
+  hunks: readonly PatchHunk[],
+  width: number,
+  hits?: FullFileViewOptions["hits"],
+  oldDocument?: string | null,
+): ExtensionFileViewLayout | null {
   const built = buildEntries(newDocument, hunks);
   if (built === null) return null;
-  const { entries, hunkEntryRanges, gutterWidthOld, gutterWidthNew } = built;
+  const { entries, lines, hunkEntryRanges, gutterWidthOld, gutterWidthNew } = built;
+  const docs = resolveSyntaxDocuments(newDocument, lines, oldDocument);
   const colWidth = Math.floor((width - 3) / 2);
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
@@ -355,7 +471,7 @@ function buildSplitRows(newDocument: string, hunks: readonly PatchHunk[], width:
 
   /** Push one row and, when it falls inside a hunk, attach `sourceRanges` for the present side(s). */
   const emit = (left: SplitCell | null, right: SplitCell | null, inHunk: boolean, oldLine: number | null, newLine: number | null) => {
-    pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right, hits);
+    pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right, hits, docs);
     if (!inHunk) return;
     const sourceRanges: { side: "old" | "new"; range: readonly [number, number] }[] = [];
     if (left !== null && oldLine !== null) sourceRanges.push({ side: "old", range: [oldLine, oldLine] });
@@ -409,22 +525,28 @@ function buildSplitRows(newDocument: string, hunks: readonly PatchHunk[], width:
   }
 
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
-  return { rows, hunkRows };
+  return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
 /**
  * `buildSplitRows` plus the layout-cap fallback chain: hit-splitting can push any row past its
- * plain shape (5 spans), so first try with hits, then retry the same split columns without
+ * plain shape (up to 9 spans), so first try with hits, then retry the same split columns without
  * hit-splitting, and only then give up the split presentation for a plain single column — a file
  * too big or a terminal too wide for two columns even without hits still needs that last step.
  */
-function buildSplitFileLayout(newDocument: string, hunks: readonly PatchHunk[], width: number, hits?: FullFileViewOptions["hits"]): ExtensionFileViewLayout | null {
-  const withHits = buildSplitRows(newDocument, hunks, width, hits);
+function buildSplitFileLayout(
+  newDocument: string,
+  hunks: readonly PatchHunk[],
+  width: number,
+  hits?: FullFileViewOptions["hits"],
+  oldDocument?: string | null,
+): ExtensionFileViewLayout | null {
+  const withHits = buildSplitRows(newDocument, hunks, width, hits, oldDocument);
   if (withHits === null) return null;
   if (withinLayoutCaps(withHits.rows)) return withHits;
   if (hits) {
-    const withoutHits = buildSplitRows(newDocument, hunks, width);
+    const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument);
     if (withoutHits !== null && withinLayoutCaps(withoutHits.rows)) return withoutHits;
   }
-  return buildSingleFileLayout(newDocument, hunks);
+  return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
 }

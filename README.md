@@ -103,9 +103,14 @@ end with a notice.
 - Single-file mode reloads the review on every switch, needs a reloadable input (not a piped
   patch), ignores hunk's filter, and does not carry an open full-file view across switches.
 - The full-file view needs a readable source (not a piped patch). It falls back to the normal
-  diff over 10,000 rows or when the file changed since the diff was taken. It has no syntax
-  highlighting, because the extension API only exposes semantic colors. Side-by-side columns cut
+  diff over 10,000 rows or when the file changed since the diff was taken. Side-by-side columns cut
   long lines with `…`.
+- Syntax highlighting in the full-file view needs hunk's extension API 24 or newer
+  (https://github.com/modem-dev/hunk/pull/1053, not in hunk 0.21.1 yet); older hunks show it in one
+  color. hunk paints the tokens; added and removed rows keep only their `+`/`-` marker and gaps in
+  the row's green or red, with no background tint. Removed rows are highlighted only when the old
+  side is readable. A file with terminal control characters, or where old and new side together
+  exceed 10,000 lines or 1,000,000 characters, loses the old side first and then all highlighting.
 - hunk announces its split/stack layout to extensions only when it changes. Until then the
   full-file view guesses split when the review body is at least 116 columns wide, which matches
   hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,

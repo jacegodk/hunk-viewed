@@ -363,7 +363,9 @@ export default function (hunk: HunkExtensionAPI) {
       // The row-parity guard that keeps this view from lying about a file hunk didn't parse:
       // decline before reading the document so a mismatch falls back to the raw diff.
       if (hunks.length !== (input.file.hunks?.length ?? 0)) return null;
-      const document = await input.readDocument("new");
+      // The old side is only for syntax paint on removed rows; `null` (a piped patch, a new file)
+      // just leaves those rows in their flat tone.
+      const [document, oldDocument] = await Promise.all([input.readDocument("new"), input.readDocument("old")]);
       if (document === null || input.signal.aborted) return null;
       // hunk only announces its resolved layout on a change after startup (`layout_changed`), so
       // this heuristic applies for the whole session whenever hunk has not reported one, not just
@@ -379,6 +381,7 @@ export default function (hunk: HunkExtensionAPI) {
         // Only this file's own current pick gets the bold accent; a pick that belongs to
         // another file simply finds no matching (side, line, range) here.
         hits: { query: searchState.query, current: current && current.filePath === input.file.path ? current : null },
+        oldDocument,
       });
       // Report this file's whole-document hits regardless of whether the layout above rendered:
       // the document was read successfully either way, and `F` (not a successful layout) is what
