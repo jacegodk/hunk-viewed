@@ -33,6 +33,7 @@ hunk diff --extension ~/work/hunk-viewed
 | `K` | `hunk-viewed.previousUnviewed` | Previous file. |
 | `U` | `hunk-viewed.skipToUnviewed` | Next unviewed file. Skips viewed files; `J`/`K` do not. |
 | `F` | `hunk-viewed.fullFile` | Toggle the full file: every line, with the diff marked in place. Side by side when hunk's layout is split, one column when stacked. |
+| `A` | `hunk-viewed.expandAll` | Toggle expand all: every file the full-file view can show opens in full, except viewed files. Off closes them all, also files opened with `F`. Per session. |
 | `o` | `hunk-viewed.singleFile` | Toggle single-file mode: the review shows only the current file, the pane still lists all files. |
 | `ctrl+f`, `f3` | `hunk-viewed.search` | Search: open the prompt, or jump to the next hit when a search is active. |
 | `ctrl+n` | `hunk-viewed.searchNext` | Next hit. |
@@ -61,6 +62,7 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
 "hunk-viewed.previousUnviewed" = "K"
 "hunk-viewed.skipToUnviewed" = "U"
 "hunk-viewed.fullFile" = "F"
+"hunk-viewed.expandAll" = "A"
 "hunk-viewed.singleFile" = "o"
 "hunk-viewed.foldViewed" = "ctrl+g"
 "hunk-viewed.search" = ["ctrl+f", "f3"]
@@ -112,6 +114,10 @@ end with a notice.
   on file-view rows. In split layout the old column needs a readable old side for highlighting. A
   file with terminal control characters, or where old and new side together exceed 10,000 lines or
   1,000,000 characters, loses the old side first and then all highlighting.
+- Expand all needs an unviewed file selected that the full view can show, because hunk applies the
+  selected file's presentation to the others. Like folding it is per loaded file: after a reload,
+  and after every switch in single-file mode, press `A` again. While it is on, `F` on a viewed
+  file is refused with hunk's own notice; `V` unmarks the file and opens it in full.
 - hunk announces its split/stack layout to extensions only when it changes. Until then the
   full-file view guesses split when the review body is at least 116 columns wide, which matches
   hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,

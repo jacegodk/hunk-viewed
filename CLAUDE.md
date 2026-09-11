@@ -53,6 +53,7 @@ never call the host.
 | `src/reviewMirror.ts` | Mirror of the live review built from lifecycle events: `files` (filtered changeset), `allFiles` (untransformed changeset seen by the transform), `filter`, `selectedFileId`, `resolvedLayout`. `visibleFiles()` reimplements hunk's filter rule. |
 | `src/viewedStore.ts` | Marks for the current repo. A file is viewed when the stored sha256 of its patch matches (`src/patchHash.ts`). Every publish calls the persist callback. |
 | `src/singleFile.ts` | `active`, `targetPath`, `pendingPath` (pane click awaiting Enter), `returnPath` (file to reselect after exit). Also the pure changeset transform. |
+| `src/expandAll.ts` | Expand-all flag and the set of files whose full view must decline (`collapsedFileIds`). Hunk can reset only the selected file to raw, so "collapse all" works by declining layouts and refreshing; `F` lifts a decline. |
 | `src/search.ts` | Query, merged hits, current index, prompt draft, `fullViewFileIds`. Diff-file hits come from `parseUnifiedPatch(file.patch)`; full-view hits are reported by the full view's layout pass via `setDocumentHits`. |
 
 ### Persistence
@@ -82,6 +83,9 @@ older than 30 days, and renames a temp file over the target. Repo key is the rea
   payload from `changeset_loaded`/`session_reload` by path and merges it back into `allFiles`.
 - `layout_changed` fires only on changes after startup, so the full view guesses split at body width
   ≥ 116 until an event arrives.
+- Bulk presentation changes go through `hunk.view.applyFilePresentationToAllMatching`, which applies the
+  selected file's current view to every file that view's `matches` accepts and enables only after that
+  file rendered it (`foldViewed`, `expandAll`). There is no bulk reset to raw.
 - `fileViews.select`/`toggle` and `navigation.selectFile` only dispatch state. Handlers that depend on
   the result poll with `waitFor` (16 ms × 20) instead of assuming it applied.
 - Single-file mode works by reloading (`hunk.app.refresh`) with a filtering transform, so it needs a

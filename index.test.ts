@@ -24,6 +24,7 @@ import type {
 } from "hunkdiff/extension";
 import { HUNK_EXTENSION_API_VERSION } from "hunkdiff/extension";
 import registerExtension from "./index";
+import { getExpandAllState, resetExpandAllForTests } from "./src/expandAll";
 import { getReviewMirror, resetReviewMirrorForTests, setMirrorFilter, visibleFiles } from "./src/reviewMirror";
 import { getSearchState, rebuildHits, resetSearchForTests, setFullViewFile, setQuery, stepHit } from "./src/search";
 import { enterSingleFile, getSingleFileState, resetSingleFileForTests, setSingleFilePending } from "./src/singleFile";
@@ -220,6 +221,7 @@ beforeEach(() => {
   resetReviewMirrorForTests();
   resetSingleFileForTests();
   resetSearchForTests();
+  resetExpandAllForTests();
   repoDir = mkdtempSync(join(tmpdir(), "hunk-viewed-repo-"));
   stateDir = mkdtempSync(join(tmpdir(), "hunk-viewed-state-"));
   originalXdgStateHome = process.env.XDG_STATE_HOME;
@@ -851,6 +853,156 @@ describe("full file view", () => {
     };
     const layout = await view.layout({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
     expect(layout).toBeNull();
+  });
+});
+
+describe("expand all", () => {
+  const fullView = (fake: FakeHunk) =>
+    fake.fileViews.find((v) => (v as { id: string }).id === "full") as {
+      matches: (f: ExtensionDiffFile) => boolean;
+      layout: (input: unknown) => Promise<{ rows: unknown[] } | null>;
+    };
+  const layoutInput = (file: ExtensionDiffFile) => ({ file, width: 80, signal: new AbortController().signal, changes: [], readDocument: async () => "b\n" });
+  const hunked = (id: string, path: string) => makeFile(id, path, { patch: "@@ -1 +1 @@\n-a\n+b\n", hunks: [{ index: 0, header: "@@" }] as never });
+
+  test("A is the default key", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    expect(fake.commands.get("expandAll")?.command.key).toBe("A");
+  });
+
+  test("on: selects the full view on the selected file, runs hunk's bulk apply, and records every unviewed matching file as full-view", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, b, c] = [hunked("1", "a.ts"), hunked("2", "b.ts"), makeFile("3", "c.bin", { isBinary: true })];
+    loadChangeset(fake, [a, b, c]);
+    storeToggleViewed(b, new Date());
+    const calls = createCalls();
+    calls.isEnabledResults = [false, true];
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], calls));
+    expect(getExpandAllState().active).toBe(true);
+    expect(calls.fileViewSelects).toEqual(["full"]);
+    expect(calls.executed).toEqual(["hunk.view.applyFilePresentationToAllMatching"]);
+    // b is viewed, c is binary: neither joins the expanded set.
+    expect([...getSearchState().fullViewFileIds]).toEqual(["1"]);
+    // While on, the view refuses viewed files so the bulk apply leaves them folded.
+    expect(fullView(fake).matches(a)).toBe(true);
+    expect(fullView(fake).matches(b)).toBe(false);
+  });
+
+  test("on: notifies without changing state when no file, a viewed file, or an unshowable file is selected", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, bin] = [hunked("1", "a.ts"), makeFile("3", "c.bin", { isBinary: true })];
+    loadChangeset(fake, [a, bin]);
+    storeToggleViewed(a, new Date());
+    for (const selected of [null, a, bin]) {
+      const notified: Array<[string, string | undefined]> = [];
+      const calls = createCalls();
+      await fake.commands.get("expandAll")!.handler(commandContext(selected, [], notified, calls));
+      expect(notified).toEqual([["Select an unviewed file the full view can show, then expand", "info"]]);
+      expect(calls.fileViewSelects).toEqual([]);
+      expect(getExpandAllState().active).toBe(false);
+    }
+  });
+
+  test("on: warns and stays off when the bulk command never enables", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const a = hunked("1", "a.ts");
+    loadChangeset(fake, [a]);
+    const notified: Array<[string, string | undefined]> = [];
+    const calls = createCalls();
+    calls.isEnabledResults = [false];
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], notified, calls));
+    expect(notified).toEqual([["Could not expand every file", "warning"]]);
+    expect(calls.executed).toEqual([]);
+    expect(getExpandAllState().active).toBe(false);
+  });
+
+  test("V while on: unmarking a file opens it in full; marking one folds it and drops its full-view membership", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, b] = [hunked("1", "a.ts"), hunked("2", "b.ts")];
+    loadChangeset(fake, [a, b]);
+    storeToggleViewed(b, new Date());
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+
+    const unmark = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(b, [], [], unmark));
+    expect(isViewed(getViewedState(), b)).toBe(false);
+    expect(unmark.fileViewSelects).toEqual(["full"]);
+    expect([...getSearchState().fullViewFileIds].sort()).toEqual(["1", "2"]);
+
+    const mark = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(a, [], [], mark));
+    expect(mark.fileViewSelects).toEqual(["viewed"]);
+    expect([...getSearchState().fullViewFileIds]).toEqual(["2"]);
+  });
+
+  test("V while off still returns an unmarked file to raw", () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const a = hunked("1", "a.ts");
+    loadChangeset(fake, [a]);
+    storeToggleViewed(a, new Date());
+    const calls = createCalls();
+    fake.commands.get("toggleViewed")!.handler(commandContext(a, [], [], calls));
+    expect(calls.fileViewSelects).toEqual([null]);
+  });
+
+  test("off: collapses every full-view file by declining its layout, also one opened with F; F on a collapsed file lifts the decline", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, b] = [hunked("1", "a.ts"), hunked("2", "b.ts")];
+    loadChangeset(fake, [a, b]);
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+    expect([...getSearchState().fullViewFileIds].sort()).toEqual(["1", "2"]);
+    expect(await fullView(fake).layout(layoutInput(a))).not.toBeNull();
+
+    const off = createCalls();
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], off));
+    expect(getExpandAllState().active).toBe(false);
+    expect(off.fileViewRefreshes).toEqual(["full"]);
+    expect(off.fileViewSelects).toEqual([]);
+    expect([...getSearchState().fullViewFileIds]).toEqual([]);
+    expect(await fullView(fake).layout(layoutInput(a))).toBeNull();
+    expect(await fullView(fake).layout(layoutInput(b))).toBeNull();
+
+    // F on the collapsed b: no toggle (hunk still presents "full"), just a scoped re-layout.
+    const reopen = createCalls();
+    reopen.fileViewActive = true;
+    await fake.commands.get("fullFile")!.handler(commandContext(b, [], [], reopen));
+    expect(reopen.fileViewToggles).toEqual([]);
+    expect(reopen.fileViewRefreshes).toEqual(["full:2"]);
+    expect([...getSearchState().fullViewFileIds]).toEqual(["2"]);
+    expect(await fullView(fake).layout(layoutInput(b))).not.toBeNull();
+    expect(await fullView(fake).layout(layoutInput(a))).toBeNull();
+  });
+
+  test("on again after off lifts every pending collapse and refreshes the view", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, b] = [hunked("1", "a.ts"), hunked("2", "b.ts")];
+    loadChangeset(fake, [a, b]);
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+    const on = createCalls();
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], on));
+    expect(on.fileViewRefreshes).toEqual(["full"]);
+    expect(await fullView(fake).layout(layoutInput(b))).not.toBeNull();
+  });
+
+  test("a reload prunes collapsed files no longer present", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const [a, b] = [hunked("1", "a.ts"), hunked("2", "b.ts")];
+    loadChangeset(fake, [a, b]);
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+    await fake.commands.get("expandAll")!.handler(commandContext(a, [], [], createCalls()));
+    expect([...getExpandAllState().collapsedFileIds].sort()).toEqual(["1", "2"]);
+    fake.events.get("session_reload")!({ changeset: makeChangeset([b]) }, eventContext(repoDir));
+    expect([...getExpandAllState().collapsedFileIds]).toEqual(["2"]);
   });
 });
 

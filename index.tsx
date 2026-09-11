@@ -11,6 +11,9 @@
  * persist per repo in the XDG state dir and reset when a file's patch changes. The pane replaces
  * hunk's files pane and shows marks and progress.
  *
+ * `A` toggles expand-all: every file the full-file view can show opens in full, except viewed
+ * files; off closes them all, also files opened with `F`. Per session.
+ *
  * `ctrl+f`/`f3` open the bottom-bar search prompt, or jump to the next hit when a search is
  * already active; `ctrl+n`/`ctrl+p` step to the next/previous hit. Matches are painted by a line highlighter
  * in the normal diff and as accent spans in the full-file view; viewed files are excluded from
@@ -20,6 +23,14 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ExtensionCommandContext, ExtensionContext, ExtensionDiffFile, ExtensionKeyEvent, ExtensionLineHighlight, HunkExtensionAPI } from "hunkdiff/extension";
 import { matchesKey } from "hunkdiff/extension";
+import {
+  collapseFullViews,
+  getExpandAllState,
+  isFullViewCollapsed,
+  pruneCollapsed,
+  setExpandAllActive,
+  uncollapseFullView,
+} from "./src/expandAll";
 import { FOLDED_VIEW_ID, buildFoldedLayout } from "./src/foldedView";
 import { FULL_VIEW_ID, buildFullFileLayout } from "./src/fullFileView";
 import { findUnviewedNeighbor } from "./src/navigation";
@@ -98,6 +109,28 @@ function rebuildVisibleHits(): void {
 /** Rebuild the merged hit list from the currently visible files, only while a search is active. */
 function rebuildHitsIfActive(): void {
   if (getSearchState().query !== "") rebuildVisibleHits();
+}
+
+/** After full-view membership changed: rebuild the hit list and repaint marks and full views, only while a search is active. */
+function refreshSearchIfActive(ctx: ExtensionCommandContext): void {
+  if (getSearchState().query === "") return;
+  rebuildVisibleHits();
+  ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
+  ctx.fileViews.refresh(FULL_VIEW_ID);
+}
+
+/** Whether the full view can present `file`: readable source with hunks, not deleted or binary. */
+function fullViewCanShow(file: ExtensionDiffFile): boolean {
+  return !file.isBinary && !file.isTooLarge && (file.hunks?.length ?? 0) > 0 && file.changeType !== "deleted";
+}
+
+/**
+ * The full view's `matches`: `fullViewCanShow`, and while expand-all is on also not viewed, so
+ * hunk's bulk apply leaves viewed files folded. The cost is that `F` on a folded file is refused
+ * while expand-all is on; unmarking it with `V` opens it in full instead.
+ */
+function fullViewMatches(file: ExtensionDiffFile): boolean {
+  return fullViewCanShow(file) && !(getExpandAllState().active && isViewed(getViewedState(), file));
 }
 
 /** Resolver for the open search prompt; settled by Enter (with the draft) or Esc (`null`). */
@@ -251,6 +284,7 @@ export default function (hunk: HunkExtensionAPI) {
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
     pruneSearchFiles(changeset.files.map((file) => file.id));
+    pruneCollapsed(changeset.files.map((file) => file.id));
     rebuildHitsIfActive();
   });
   hunk.on("session_reload", ({ changeset }, ctx) => {
@@ -258,6 +292,7 @@ export default function (hunk: HunkExtensionAPI) {
     reconcileViewed(changeset.files);
     refreshProjectedFiles(changeset.files);
     pruneSearchFiles(changeset.files.map((file) => file.id));
+    pruneCollapsed(changeset.files.map((file) => file.id));
     rebuildHitsIfActive();
     // The reload that follows leaving single-file mode: reselect the file that mode was showing,
     // scrolled to the top, instead of leaving the selection wherever it lands by default.
@@ -355,8 +390,11 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.registerFileView({
     id: FULL_VIEW_ID,
     title: "Full file",
-    matches: (file) => !file.isBinary && !file.isTooLarge && (file.hunks?.length ?? 0) > 0 && file.changeType !== "deleted",
+    matches: fullViewMatches,
     async layout(input) {
+      // Collapsed by expand-all off: hunk still holds the "full" presentation, so decline here and
+      // let it show the raw diff (a null layout is a silent fallback).
+      if (isFullViewCollapsed(input.file.id)) return null;
       if (input.file.statsTruncated) return null;
       const hunks = parseUnifiedPatch(input.file.patch);
       if (hunks.length === 0) return null;
@@ -401,17 +439,59 @@ export default function (hunk: HunkExtensionAPI) {
       ctx.notify("No file selected", "info");
       return;
     }
+    // A file collapsed by expand-all off still holds hunk's "full" presentation with a declined
+    // layout: lift the decline and re-lay it out, rather than toggling the presentation away.
+    if (isFullViewCollapsed(file.id)) {
+      uncollapseFullView(file.id);
+      setFullViewFile(file.id, true);
+      ctx.fileViews.refresh(FULL_VIEW_ID, { fileId: file.id });
+      refreshSearchIfActive(ctx);
+      return;
+    }
     const wasFull = ctx.fileViews.isActive(FULL_VIEW_ID);
     ctx.fileViews.toggle(FULL_VIEW_ID);
     // `toggle` can be refused (the view's `matches`/`layout` declines), so wait for the presented
     // state to actually settle before trusting it, rather than assuming the toggle always applied.
     await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID) === !wasFull);
     setFullViewFile(file.id, ctx.fileViews.isActive(FULL_VIEW_ID));
-    if (getSearchState().query !== "") {
-      rebuildVisibleHits();
-      ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
+    refreshSearchIfActive(ctx);
+  });
+
+  hunk.registerCommand({ id: "expandAll", title: "Toggle expand all files", key: "A" }, async (ctx) => {
+    if (getExpandAllState().active) {
+      // Off: hunk can reset only the selected file to raw, so every file showing the full view
+      // (expanded, or opened with F) is collapsed by declining its layout, then re-laid out raw.
+      const shown = [...getSearchState().fullViewFileIds];
+      setExpandAllActive(false);
+      collapseFullViews(shown);
+      for (const id of shown) setFullViewFile(id, false);
       ctx.fileViews.refresh(FULL_VIEW_ID);
+      refreshSearchIfActive(ctx);
+      return;
     }
+    const file = ctx.selection.file;
+    if (!file || !fullViewCanShow(file) || isViewed(getViewedState(), file)) {
+      ctx.notify("Select an unviewed file the full view can show, then expand", "info");
+      return;
+    }
+    setExpandAllActive(true);
+    // The bulk command applies the selected file's presentation to every file the view matches,
+    // and only enables once that file has rendered it: select the view, refresh so a layout
+    // declined while collapsed is not served from cache, then wait for the render to catch up.
+    ctx.fileViews.select(FULL_VIEW_ID);
+    ctx.fileViews.refresh(FULL_VIEW_ID);
+    const ready = await waitFor(() => ctx.commands.isEnabled("hunk.view.applyFilePresentationToAllMatching"));
+    if (!ready || !ctx.commands.execute("hunk.view.applyFilePresentationToAllMatching")) {
+      ctx.notify("Could not expand every file", "warning");
+      setExpandAllActive(false);
+      setFullViewFile(file.id, ctx.fileViews.isActive(FULL_VIEW_ID));
+      refreshSearchIfActive(ctx);
+      return;
+    }
+    for (const expanded of getReviewMirror().files) {
+      if (fullViewMatches(expanded)) setFullViewFile(expanded.id, true);
+    }
+    refreshSearchIfActive(ctx);
   });
 
   hunk.registerCommand({ id: "toggleViewed", title: "Toggle viewed on the selected file", key: "V" }, (ctx) => {
@@ -421,7 +501,14 @@ export default function (hunk: HunkExtensionAPI) {
       return;
     }
     const result = toggleViewed(file, new Date());
-    ctx.fileViews.select(result === "cleared" ? null : FOLDED_VIEW_ID);
+    if (result === "cleared" && getExpandAllState().active && fullViewMatches(file)) {
+      // Expand-all is on: an unmarked file joins the expanded set instead of returning to raw.
+      ctx.fileViews.select(FULL_VIEW_ID);
+      setFullViewFile(file.id, true);
+    } else {
+      ctx.fileViews.select(result === "cleared" ? null : FOLDED_VIEW_ID);
+      setFullViewFile(file.id, false);
+    }
     // Marking (or unmarking) a file changes whether it is scanned at all: rebuild the merged
     // list and refresh just this file's marks so they appear/disappear with the fold.
     if (getSearchState().query !== "") {
