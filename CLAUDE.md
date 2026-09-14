@@ -28,8 +28,10 @@ There is no linter or formatter configured.
 ## Where the API contract lives
 
 - `node_modules/hunkdiff/dist/npm/extension/index.d.ts`: exact types for `HunkExtensionAPI`, contexts, events.
-- `src/hunkdiff-api24.d.ts` augments those with the API 24 file-view syntax fields (`codeDocuments`,
-  `span.syntax`) that the pinned `hunkdiff@0.21.0` predates. Delete it when the dev dependency ships them.
+- `src/hunkdiff-api24.d.ts` augments those with the file-view syntax fields (`codeDocuments`, `span.syntax`;
+  hunk calls them API 28) that the pinned `hunkdiff@0.21.0` predates. Delete it when the dev dependency
+  ships them. `package.json` stays at `apiVersion` 16 so older hunks keep loading the extension; they
+  ignore the extra fields.
 - `node_modules/hunkdiff/skills/hunk-extensions/SKILL.md`: hunk's own authoring guide and links.
 - Command, keyboard-mode and event contexts expose different subsets. Keyboard modes have `commands`,
   `highlights`, `keyboardModes`, `notify` but no `navigation`/`panes`/`fileViews`. Event contexts have

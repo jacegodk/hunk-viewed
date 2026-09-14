@@ -107,9 +107,10 @@ end with a notice.
 - The full-file view needs a readable source (not a piped patch). It falls back to the normal
   diff over 10,000 rows or when the file changed since the diff was taken. Side-by-side columns cut
   long lines with `…`.
-- Syntax highlighting in the full-file view needs hunk's extension API 24 or newer
-  (https://github.com/modem-dev/hunk/pull/1053, not in hunk 0.21.1 yet); older hunks show it in one
-  color. Only unchanged lines are highlighted. Added and removed lines stay solid green and red,
+- Syntax highlighting in the full-file view needs a hunk newer than 0.22.0 (extension API 28,
+  https://github.com/modem-dev/hunk/pull/1053, merged 2026-09-13 and unreleased); older hunks ignore
+  the extra fields and show it in one color. `package.json` keeps `apiVersion` 16 on purpose, so
+  the extension still loads on hunk 0.21 and 0.22. Only unchanged lines are highlighted. Added and removed lines stay solid green and red,
   because hunk's token colors would replace that color and hunk paints no green or red background
   on file-view rows. In split layout the old column needs a readable old side for highlighting. A
   file with terminal control characters, or where old and new side together exceed 10,000 lines or
