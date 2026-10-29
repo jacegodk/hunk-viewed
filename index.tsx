@@ -58,7 +58,6 @@ import {
   pruneSearchFiles,
   rebuildHits,
   sameHit,
-  sameHitLocation,
   scanDocumentHits,
   scanGapHits,
   scanPatchHits,
@@ -203,12 +202,40 @@ function fullViewMatches(file: ExtensionDiffFile): boolean {
 let promptResolve: ((value: string | null) => void) | null = null;
 
 /**
+ * Set while the search prompt displaces single-file mode (one keyboard mode at a time), so the
+ * mode's exit and re-entry skip their reloads: a reload would drop the one-file view and
+ * invalidate the search command's context, which the prompt's result is applied through.
+ */
+let singleSuspended = false;
+
+/**
  * Bumped by every search apply/clear so a background out-of-diff scan for a superseded query
  * stops merging its results.
  */
 let gapScanToken = 0;
-/** The hit the query applied to, by location, so the finished scan can detect an unmoved pick. */
-let appliedPickLocation: SearchHit | null = null;
+/**
+ * Set by `applySearch` until the scan it started finishes: that scan lands the true first hit
+ * (an out-of-diff match may precede the patch pick, or be the only match). Stepping clears it,
+ * so a later scan never yanks the user back to the first hit.
+ */
+let initialLandingPending = false;
+/** The hit `applySearch` revealed synchronously (a patch hit), or null when it had none. */
+let appliedReveal: SearchHit | null = null;
+
+/** Land the first hit once the applied query's scan settles, unless the user moved meanwhile. */
+async function finishInitialLanding(ctx: ExtensionCommandContext): Promise<void> {
+  if (!initialLandingPending) return;
+  initialLandingPending = false;
+  const first = getSearchState().hits[0] ?? null;
+  if (!first) {
+    ctx.notify("No hits", "info");
+    return;
+  }
+  if (appliedReveal && sameHit(appliedReveal, first)) return;
+  pickIndex(0);
+  ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
+  await revealHit(ctx, first);
+}
 
 /**
  * Scan every visible file's unchanged regions for the active query, one file at a time, merging
@@ -223,7 +250,10 @@ async function scanGapHitsAcrossFiles(ctx: ExtensionCommandContext): Promise<voi
   // `workspace` is documented on command contexts, but tolerate hosts or test harnesses that
   // omit it: without document reads there is no out-of-diff scan.
   const workspace = (ctx as Partial<ExtensionCommandContext>).workspace;
-  if (!workspace) return;
+  if (!workspace) {
+    await finishInitialLanding(ctx);
+    return;
+  }
   const token = ++gapScanToken;
   const visible = visibleFiles(getReviewMirror());
   const excluded = viewedFileIds(visible);
@@ -235,16 +265,7 @@ async function scanGapHitsAcrossFiles(ctx: ExtensionCommandContext): Promise<voi
     setGapHits(file.id, query, document === null ? [] : scanGapHits(file, document, query));
     rebuildVisibleHits();
   }
-  // The scan is done: if the user has not navigated since the query was applied, land the true
-  // first hit — an out-of-diff match earlier in review order may now precede the applied pick.
-  // Compare locations, not indexes: the pick pins by location while the list grows around it.
-  const current = currentHit();
-  const first = getSearchState().hits[0] ?? null;
-  if (current && appliedPickLocation && sameHitLocation(current, appliedPickLocation) && first && !sameHit(current, first)) {
-    pickIndex(0);
-    ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
-    await revealHit(ctx, first);
-  }
+  await finishInitialLanding(ctx);
 }
 
 /** Apply a submitted query: rebuild hits, refresh presentation, and reveal (or notice) the first pick. */
@@ -254,14 +275,15 @@ function applySearch(ctx: ExtensionCommandContext, query: string): void {
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
   const hit = currentHit();
-  appliedPickLocation = hit ? ({ filePath: hit.filePath, side: hit.side, line: hit.line, range: hit.range } as SearchHit) : null;
+  initialLandingPending = true;
+  appliedReveal = hit;
   if (hit) void revealHit(ctx, hit);
-  else ctx.notify("No hits", "info");
   void scanGapHitsAcrossFiles(ctx);
 }
 
 /** Clear the active search, its highlights, and its bottom-bar pane. */
 function applyClear(ctx: ExtensionCommandContext): void {
+  initialLandingPending = false;
   clearSearch();
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
@@ -285,7 +307,9 @@ function moveHit(ctx: ExtensionCommandContext, direction: 1 | -1): void {
     ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID, { fileId });
     ctx.fileViews.refresh(FULL_VIEW_ID, { fileId });
   }
-  // Stepping is also the chance to resume the out-of-diff scan after a reload dropped it.
+  // The user moved: the applied query's scan must no longer re-land on the first hit. Stepping
+  // is also the chance to resume the out-of-diff scan after a reload dropped it.
+  initialLandingPending = false;
   void scanGapHitsAcrossFiles(ctx);
   void revealHit(ctx, step.hit);
   if (step.wrapped) ctx.notify(direction === 1 ? "Wrapped to the first hit" : "Wrapped to the last hit", "info");
@@ -307,7 +331,9 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
     promptResolve = null;
   }
   ctx.panes.open(SEARCH_PANE_ID);
+  singleSuspended = ctx.keyboardModes.isActive(SINGLE_MODE_ID);
   if (!ctx.keyboardModes.enterMode(SEARCH_PROMPT_MODE_ID)) {
+    resumeSingle(ctx);
     closePrompt();
     ctx.panes.close(SEARCH_PANE_ID);
     ctx.notify("Could not open the search prompt", "warning");
@@ -317,6 +343,7 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
   const value = await new Promise<string | null>((resolve) => {
     promptResolve = resolve;
   });
+  resumeSingle(ctx);
   if (value === null) {
     if (getSearchState().query === "") ctx.panes.close(SEARCH_PANE_ID);
     return;
@@ -326,6 +353,15 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
     return;
   }
   applySearch(ctx, value);
+}
+
+/** Re-enter single-file mode after the search prompt displaced it, without reloading. */
+function resumeSingle(ctx: ExtensionCommandContext): void {
+  if (!singleSuspended) return;
+  if (ctx.keyboardModes.enterMode(SINGLE_MODE_ID)) return;
+  singleSuspended = false;
+  exitSingleFile(getSingleFileState().targetPath);
+  ctx.commands.execute("hunk.app.refresh");
 }
 
 /** Register the hunk-viewed pane, commands, keyboard mode, and event handlers. */
@@ -715,9 +751,14 @@ export default function (hunk: HunkExtensionAPI) {
     // The target is seeded by the `singleFile` command before entry (selection can be debounced
     // by the time onEnter runs), so entry only needs to reload with that target in effect.
     onEnter(ctx) {
+      if (singleSuspended) {
+        singleSuspended = false;
+        return;
+      }
       ctx.commands.execute("hunk.app.refresh");
     },
     onExit(ctx) {
+      if (singleSuspended) return;
       const { targetPath } = getSingleFileState();
       exitSingleFile(targetPath);
       ctx.commands.execute("hunk.app.refresh");
