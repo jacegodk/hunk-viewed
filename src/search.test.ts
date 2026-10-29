@@ -7,14 +7,17 @@ import {
   editDraft,
   findLineHits,
   getSearchState,
+  hasGapHitsFor,
   openPrompt,
   pruneSearchFiles,
   rebuildHits,
   resetSearchForTests,
   scanDocumentHits,
+  scanGapHits,
   scanPatchHits,
   setDocumentHits,
   setFullViewFile,
+  setGapHits,
   setQuery,
   stepHit,
 } from "./search";
@@ -98,6 +101,49 @@ describe("scanDocumentHits", () => {
   test("empty query yields no hits", () => {
     const f = { id: "f1", path: "a.ts" };
     expect(scanDocumentHits(f, "foo\n", "")).toEqual([]);
+  });
+});
+
+describe("scanGapHits", () => {
+  const patch = [
+    "@@ -2,3 +2,3 @@",
+    " in hunk one",
+    "+added in hunk one",
+    " still hunk one",
+    "@@ -6,1 +6,1 @@",
+    "-old removed",
+    "+in hunk two",
+  ].join("\n");
+
+  test("keeps only matches on new-side lines no hunk renders, marked outside", () => {
+    const f = file("f1", "a.ts", patch);
+    const document = [
+      "gap before hunk one", // line 1: leading gap
+      "in hunk one", // line 2: hunk one context — excluded
+      "added in hunk one", // line 3: hunk one added — excluded
+      "still hunk one", // line 4: hunk one context — excluded
+      "gap foo after hunk one", // line 5: between the hunks
+      "in hunk two", // line 6: hunk two added — excluded
+      "trailing gap foo", // line 7: after the last hunk
+    ].join("\n") + "\n";
+    expect(scanGapHits(f, document, "foo")).toEqual([
+      { fileId: "f1", filePath: "a.ts", side: "new", line: 5, range: [4, 7], outside: true },
+      { fileId: "f1", filePath: "a.ts", side: "new", line: 7, range: [13, 16], outside: true },
+    ]);
+  });
+
+  test("a pure-deletion hunk renders no new-side line, so the line it names is a gap", () => {
+    const f = file("f1", "a.ts", "@@ -5,2 +4,0 @@\n-gone one\n-gone two\n");
+    const document = ["before", "the named line gone", "after"].join("\n") + "\n";
+    // New-side line 2 renders as context before the deletion hunk's rows: a gap line.
+    expect(scanGapHits(f, document, "gone")).toEqual([
+      { fileId: "f1", filePath: "a.ts", side: "new", line: 2, range: [15, 19], outside: true },
+    ]);
+  });
+
+  test("empty query yields no hits", () => {
+    const f = file("f1", "a.ts", patch);
+    expect(scanGapHits(f, "anything\n", "")).toEqual([]);
   });
 });
 
@@ -203,6 +249,52 @@ describe("rebuildHits", () => {
       { fileId: "b", filePath: "b.ts", side: "new", line: 5, range: [0, 3] },
     ]);
     expect(state.currentIndex).toBe(0);
+  });
+
+  test("merges a file's out-of-diff hits into its patch hits in line order", () => {
+    // fileA's patch has its hit on new-side line 1; a reported gap hit on line 7 sorts after it,
+    // and one on line... none sort before line 1 here, so add a leading-gap hit via fileB's patch.
+    const gapBefore = file("c", "c.ts", "@@ -3,1 +3,1 @@\n foo in hunk\n");
+    setGapHits("c", "foo", [
+      { fileId: "c", filePath: "c.ts", side: "new", line: 1, range: [0, 3], outside: true },
+      { fileId: "c", filePath: "c.ts", side: "new", line: 9, range: [0, 3], outside: true },
+    ]);
+    setQuery("foo");
+    rebuildHits([gapBefore]);
+    expect(getSearchState().hits).toEqual([
+      { fileId: "c", filePath: "c.ts", side: "new", line: 1, range: [0, 3], outside: true },
+      { fileId: "c", filePath: "c.ts", side: "new", line: 3, range: [0, 3] }, // the hunk's context hit
+      { fileId: "c", filePath: "c.ts", side: "new", line: 9, range: [0, 3], outside: true },
+    ]);
+  });
+
+  test("a full-view file ignores its stored gap hits (documentHits already cover the document)", () => {
+    const f = file("a", "a.ts", "@@ -1,1 +1,1 @@\n foo\n");
+    setGapHits("a", "foo", [{ fileId: "a", filePath: "a.ts", side: "new", line: 9, range: [0, 3], outside: true }]);
+    setFullViewFile("a", true);
+    setDocumentHits("a", [{ fileId: "a", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }]);
+    setQuery("foo");
+    rebuildHits([f]);
+    expect(getSearchState().hits).toEqual([{ fileId: "a", filePath: "a.ts", side: "new", line: 1, range: [0, 3] }]);
+  });
+
+  test("hasGapHitsFor matches only the query the hits were stored under", () => {
+    setGapHits("a", "foo", []);
+    expect(hasGapHitsFor("a", "foo")).toBe(true);
+    expect(hasGapHitsFor("a", "bar")).toBe(false);
+    expect(hasGapHitsFor("b", "foo")).toBe(false);
+  });
+
+  test("pruneSearchFiles drops gap hits for files no longer in the changeset", () => {
+    setGapHits("a", "foo", [{ fileId: "a", filePath: "a.ts", side: "new", line: 9, range: [0, 3], outside: true }]);
+    pruneSearchFiles(["b"]);
+    expect(hasGapHitsFor("a", "foo")).toBe(false);
+  });
+
+  test("clearSearch drops gap hits", () => {
+    setGapHits("a", "foo", [{ fileId: "a", filePath: "a.ts", side: "new", line: 9, range: [0, 3], outside: true }]);
+    clearSearch();
+    expect(hasGapHitsFor("a", "foo")).toBe(false);
   });
 
   test("keeps the current hit across a rebuild when it still exists", () => {

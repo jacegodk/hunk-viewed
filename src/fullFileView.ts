@@ -7,7 +7,7 @@ import type {
 } from "hunkdiff/extension";
 import { fitText, padText, textWidth } from "./sidebar/text";
 import { findLineHits, sameHitLocation, type SearchHit } from "./search";
-import type { PatchHunk } from "./unifiedPatch";
+import { gapOwnerForNewLine, isNewLineInHunk, type PatchHunk } from "./unifiedPatch";
 
 /** Id of the full-file presentation, qualified by hunk as `hunk-viewed:full`. */
 export const FULL_VIEW_ID = "full";
@@ -177,6 +177,50 @@ function documentLines(document: string): string[] {
   return lines;
 }
 
+/** Where a search pick outside the diff wants the view to land: the owning hunk's extent, pinned. */
+interface ExtentPin {
+  ownerIndex: number;
+  /** Zero-based row the owning extent should start at: the pick's row. */
+  row: number;
+  /** True when the pick sits after the last hunk's rows, so the previous extent must absorb them. */
+  trailing: boolean;
+}
+
+/**
+ * Derive an extent pin from the current search pick when it lies outside every hunk. Hunk's
+ * `revealLine` refuses lines no hunk contains, but `selectHunk` navigates a presented file view
+ * by its `hunkRows` extents — starting an extent on the pick's row lands the viewport there.
+ * Returns null for in-diff picks (plain `revealLine` handles those) and for picks whose row the
+ * layout did not emit.
+ */
+function deriveExtentPin(hunks: readonly PatchHunk[], current: SearchHit | null | undefined, rowOfNewLine: ReadonlyMap<number, number>): ExtentPin | null {
+  if (!current || current.side !== "new") return null;
+  // In-diff picks are revealLine's job; pinning their extent would strip the hunk rows that
+  // precede the pick out of their own extent and get the layout rejected.
+  if (isNewLineInHunk(hunks, current.line)) return null;
+  const owner = gapOwnerForNewLine(hunks, current.line);
+  if (owner === null) return null;
+  const row = rowOfNewLine.get(current.line);
+  if (row === undefined) return null;
+  return { ownerIndex: owner.index, row, trailing: owner.trailing };
+}
+
+/**
+ * Pin one hunk extent's start on `pin.row`, keeping every row that carries `sourceRanges`
+ * (hunk rows do) inside exactly one extent: the previous extent absorbs the owner's rows when
+ * the pin sits beyond them (a trailing-region pick), and a lone-hunk file has no previous
+ * extent to absorb with, so it cannot pin at all.
+ */
+function applyExtentPin(hunkRows: { startRow: number; endRow: number }[], pin: ExtentPin, lastRowIndex: number): void {
+  if (pin.trailing) {
+    if (pin.ownerIndex === 0) return;
+    hunkRows[pin.ownerIndex - 1] = { startRow: hunkRows[pin.ownerIndex - 1]!.startRow, endRow: hunkRows[pin.ownerIndex]!.endRow };
+    hunkRows[pin.ownerIndex] = { startRow: pin.row, endRow: lastRowIndex };
+    return;
+  }
+  hunkRows[pin.ownerIndex] = { startRow: pin.row, endRow: hunkRows[pin.ownerIndex]!.endRow };
+}
+
 /**
  * Rebuild the whole file as a unified diff with unlimited context.
  *
@@ -214,8 +258,11 @@ function buildSingleFileLayout(
   const gutterWidth = String(Math.max(1, lines.length)).length;
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
+  /** Zero-based row each new-side document line landed on, for out-of-diff pick pinning. */
+  const rowOfNewLine = new Map<number, number>();
 
   const push = (kind: "context" | "added" | "removed", text: string, newLine: number | null, oldLine: number | null, inHunk: boolean) => {
+    if (newLine !== null) rowOfNewLine.set(newLine, rows.length);
     const number = newLine === null ? " ".repeat(gutterWidth) : String(newLine).padStart(gutterWidth);
     const marker = kind === "added" ? "+" : kind === "removed" ? "-" : " ";
     const tone: ExtensionFileViewSpan["tone"] | undefined = kind === "added" ? "added" : kind === "removed" ? "removed" : undefined;
@@ -282,6 +329,10 @@ function buildSingleFileLayout(
   // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
   // rather than risk the warning hunk shows for an over-cap layout.
   if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
+  // extent's start on the pick's row so `selectHunk` lands the viewport there.
+  const pin = deriveExtentPin(hunks, hits?.current, rowOfNewLine);
+  if (pin) applyExtentPin(hunkRows, pin, rows.length - 1);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
@@ -469,6 +520,8 @@ function buildSplitRows(
   const colWidth = Math.floor((width - 3) / 2);
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
+  /** Zero-based row each new-side document line landed on, for out-of-diff pick pinning. */
+  const rowOfNewLine = new Map<number, number>();
 
   const contextCell = (entry: FullFileEntry, lineNumber: number): SplitCell => ({ text: entry.text, lineNumber, marker: " ", tone: undefined });
   const removedCell = (entry: FullFileEntry): SplitCell => ({ text: entry.text, lineNumber: entry.oldLine!, marker: "-", tone: "removed" });
@@ -476,6 +529,7 @@ function buildSplitRows(
 
   /** Push one row and, when it falls inside a hunk, attach `sourceRanges` for the present side(s). */
   const emit = (left: SplitCell | null, right: SplitCell | null, inHunk: boolean, oldLine: number | null, newLine: number | null) => {
+    if (newLine !== null) rowOfNewLine.set(newLine, rows.length);
     pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right, hits, docs);
     if (!inHunk) return;
     const sourceRanges: { side: "old" | "new"; range: readonly [number, number] }[] = [];
@@ -525,11 +579,15 @@ function buildSplitRows(
     }
     // Context-fill entry outside any hunk: same text and marker on both sides, own line numbers.
     const entry = entries[i]!;
-    emit(contextCell(entry, entry.oldLine!), contextCell(entry, entry.newLine!), false, null, null);
+    emit(contextCell(entry, entry.oldLine!), contextCell(entry, entry.newLine!), false, null, entry.newLine);
     i += 1;
   }
 
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
+  // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
+  // extent's start on the pick's row so `selectHunk` lands the viewport there.
+  const pin = deriveExtentPin(hunks, hits?.current, rowOfNewLine);
+  if (pin) applyExtentPin(hunkRows, pin, rows.length - 1);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
