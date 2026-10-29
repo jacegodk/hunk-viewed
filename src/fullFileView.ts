@@ -251,6 +251,7 @@ function buildSingleFileLayout(
   hunks: readonly PatchHunk[],
   hits?: FullFileViewOptions["hits"],
   oldDocument?: string | null,
+  pick: SearchHit | null = hits?.current ?? null,
 ): ExtensionFileViewLayout | null {
   const lines = documentLines(newDocument);
   if (lines.length > FULL_VIEW_MAX_ROWS) return null;
@@ -328,10 +329,10 @@ function buildSingleFileLayout(
   // Hit-splitting can push any one row well past its plain 2-span shape; on a large file with a
   // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
   // rather than risk the warning hunk shows for an over-cap layout.
-  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument, pick);
   // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
   // extent's start on the pick's row so `selectHunk` lands the viewport there.
-  const pin = deriveExtentPin(hunks, hits?.current, rowOfNewLine);
+  const pin = deriveExtentPin(hunks, pick, rowOfNewLine);
   if (pin) applyExtentPin(hunkRows, pin, rows.length - 1);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
@@ -512,6 +513,7 @@ function buildSplitRows(
   width: number,
   hits?: FullFileViewOptions["hits"],
   oldDocument?: string | null,
+  pick: SearchHit | null = hits?.current ?? null,
 ): ExtensionFileViewLayout | null {
   const built = buildEntries(newDocument, hunks);
   if (built === null) return null;
@@ -586,7 +588,7 @@ function buildSplitRows(
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
   // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
   // extent's start on the pick's row so `selectHunk` lands the viewport there.
-  const pin = deriveExtentPin(hunks, hits?.current, rowOfNewLine);
+  const pin = deriveExtentPin(hunks, pick, rowOfNewLine);
   if (pin) applyExtentPin(hunkRows, pin, rows.length - 1);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
@@ -596,6 +598,7 @@ function buildSplitRows(
  * plain shape (up to 9 spans), so first try with hits, then retry the same split columns without
  * hit-splitting, and only then give up the split presentation for a plain single column — a file
  * too big or a terminal too wide for two columns even without hits still needs that last step.
+ * Every step keeps the current pick's extent pin: only the hit paint is dropped, never the landing.
  */
 function buildSplitFileLayout(
   newDocument: string,
@@ -608,8 +611,8 @@ function buildSplitFileLayout(
   if (withHits === null) return null;
   if (withinLayoutCaps(withHits.rows)) return withHits;
   if (hits) {
-    const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument);
+    const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument, hits.current);
     if (withoutHits !== null && withinLayoutCaps(withoutHits.rows)) return withoutHits;
   }
-  return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument, hits?.current ?? null);
 }

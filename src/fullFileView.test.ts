@@ -357,6 +357,27 @@ describe("buildFullFileLayout search hits", () => {
     expect(withHits).toEqual(withoutHits);
     expectValidFileViewLayout(withHits!, 1);
   });
+
+  test("an over-cap fallback still pins the out-of-diff pick's extent, in both column modes", () => {
+    const pickOn = (line: number) => ({ fileId: "f", filePath: "f", side: "new" as const, line, range: [0, 1] as [number, number] });
+    const pinnedText = (layout: ReturnType<typeof buildFullFileLayout>) => texts(layout!)[layout!.hunkRows![1]!.startRow];
+
+    const aLines = Array.from({ length: 9000 }, (_, i) => `${"a".repeat(50)}${i + 1}`);
+    const aDoc = aLines.join("\n") + "\n";
+    const aHunks = parseUnifiedPatch(`@@ -1,1 +1,1 @@\n-x\n+${aLines[0]}\n@@ -9000,1 +9000,1 @@\n-x\n+${aLines[8999]}\n`);
+    const single = buildFullFileLayout(aDoc, aHunks, { hits: { query: "a", current: pickOn(5000) } });
+    expect(single!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    expect(pinnedText(single)).toContain("a5000");
+    expectValidFileViewLayout(single!, 2);
+
+    const fooLines = Array.from({ length: 4000 }, (_, i) => `foo line ${i + 1}`);
+    const fooDoc = fooLines.join("\n") + "\n";
+    const fooHunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-x\n+foo line 1\n@@ -4000,1 +4000,1 @@\n-x\n+foo line 4000\n");
+    const split = buildFullFileLayout(fooDoc, fooHunks, { columns: "split", width: 200, hits: { query: "foo", current: pickOn(2000) } });
+    expect(split!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    expect(pinnedText(split)).toContain("foo line 2000");
+    expectValidFileViewLayout(split!, 2);
+  });
 });
 
 describe("buildFullFileLayout syntax paint (API 24)", () => {

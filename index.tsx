@@ -176,9 +176,17 @@ async function revealOutsideDiff(ctx: ExtensionCommandContext, hit: SearchHit, h
   if (!alreadyFull) {
     if (isFullViewCollapsed(hit.fileId)) uncollapseFullView(hit.fileId);
     setFullViewFile(hit.fileId, true);
+  }
+  // `fileViews.select`/`isActive` act on the selected file, so the hit's file must be selected
+  // first — and hunk, not `fullViewFileIds`, is the authority on whether it presents the view.
+  if (getReviewMirror().selectedFileId !== hit.fileId) {
+    ctx.navigation.selectFile(hit.fileId);
+    await waitFor(() => getReviewMirror().selectedFileId === hit.fileId);
+  }
+  if (!ctx.fileViews.isActive(FULL_VIEW_ID)) {
     ctx.fileViews.select(FULL_VIEW_ID);
     ctx.fileViews.refresh(FULL_VIEW_ID);
-    ctx.notify("Match is outside the diff — showing the full file", "info");
+    if (!alreadyFull) ctx.notify("Match is outside the diff — showing the full file", "info");
     if (!(await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID)))) {
       land();
       return;
