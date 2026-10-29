@@ -358,25 +358,43 @@ describe("buildFullFileLayout search hits", () => {
     expectValidFileViewLayout(withHits!, 1);
   });
 
-  test("an over-cap fallback still pins the out-of-diff pick's extent, in both column modes", () => {
-    const pickOn = (line: number) => ({ fileId: "f", filePath: "f", side: "new" as const, line, range: [0, 1] as [number, number] });
+  test("an over-cap fallback still pins the out-of-diff pick's extent and marks only the pick, in both column modes", () => {
+    const pickOn = (line: number, length: number) => ({ fileId: "f", filePath: "f", side: "new" as const, line, range: [0, length] as [number, number] });
     const pinnedText = (layout: ReturnType<typeof buildFullFileLayout>) => texts(layout!)[layout!.hunkRows![1]!.startRow];
+    const accents = (layout: ReturnType<typeof buildFullFileLayout>) =>
+      layout!.rows.flatMap((row) => row.spans.filter((span) => span.tone === "accent").map((span) => ({ text: span.text, bold: span.attributes?.includes("bold") ?? false })));
 
     const aLines = Array.from({ length: 9000 }, (_, i) => `${"a".repeat(50)}${i + 1}`);
     const aDoc = aLines.join("\n") + "\n";
     const aHunks = parseUnifiedPatch(`@@ -1,1 +1,1 @@\n-x\n+${aLines[0]}\n@@ -9000,1 +9000,1 @@\n-x\n+${aLines[8999]}\n`);
-    const single = buildFullFileLayout(aDoc, aHunks, { hits: { query: "a", current: pickOn(5000) } });
-    expect(single!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    const single = buildFullFileLayout(aDoc, aHunks, { hits: { query: "a", current: pickOn(5000, 1) } });
+    expect(accents(single)).toEqual([{ text: "a", bold: true }]);
     expect(pinnedText(single)).toContain("a5000");
     expectValidFileViewLayout(single!, 2);
 
     const fooLines = Array.from({ length: 4000 }, (_, i) => `foo line ${i + 1}`);
     const fooDoc = fooLines.join("\n") + "\n";
     const fooHunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-x\n+foo line 1\n@@ -4000,1 +4000,1 @@\n-x\n+foo line 4000\n");
-    const split = buildFullFileLayout(fooDoc, fooHunks, { columns: "split", width: 200, hits: { query: "foo", current: pickOn(2000) } });
-    expect(split!.rows.some((row) => row.spans.some((span) => span.tone === "accent"))).toBe(false);
+    const split = buildFullFileLayout(fooDoc, fooHunks, { columns: "split", width: 200, hits: { query: "foo", current: pickOn(2000, 3) } });
+    expect(accents(split)).toEqual([{ text: "foo", bold: true }]);
     expect(pinnedText(split)).toContain("foo line 2000");
     expectValidFileViewLayout(split!, 2);
+  });
+
+  test("split columns too wide for hunk's character cap fall back to a single column that still paints every hit", () => {
+    // 5,200 padded 200-column rows cross the 1,000,000-character cap however little is painted;
+    // the single-column rebuild is a fraction of that and fits with every hit split out.
+    const lines = Array.from({ length: 5200 }, (_, i) => `foo line ${i + 1}`);
+    const doc = lines.join("\n") + "\n";
+    const hunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-x\n+foo line 1\n@@ -5200,1 +5200,1 @@\n-x\n+foo line 5200\n");
+    const current = { fileId: "f", filePath: "f", side: "new" as const, line: 2600, range: [0, 3] as [number, number] };
+    const layout = buildFullFileLayout(doc, hunks, { columns: "split", width: 200, hits: { query: "foo", current } });
+    expect(texts(layout!).some((t) => t.includes(" │ "))).toBe(false);
+    const accents = layout!.rows.flatMap((row) => row.spans.filter((span) => span.tone === "accent"));
+    expect(accents).toHaveLength(5200);
+    expect(accents.filter((span) => span.attributes?.includes("bold"))).toHaveLength(1);
+    expect(texts(layout!)[layout!.hunkRows![1]!.startRow]).toContain("foo line 2600");
+    expectValidFileViewLayout(layout!, 2);
   });
 });
 

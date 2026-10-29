@@ -58,8 +58,11 @@ function withinLayoutCaps(rows: readonly ExtensionFileViewRow[]): boolean {
 export interface FullFileViewOptions {
   columns?: "single" | "split";
   width?: number;
-  /** Active search query and current pick, so rows can mark hit text as they render. */
-  hits?: { query: string; current: SearchHit | null };
+  /**
+   * Active search query and current pick, so rows can mark hit text as they render. `currentOnly`
+   * marks just the pick: the over-cap fallback keeps it visible when painting every hit cannot fit.
+   */
+  hits?: { query: string; current: SearchHit | null; currentOnly?: boolean };
   /**
    * The old-side document, when readable. Lets the old column of a split context row reference
    * it for syntax paint; the new side is always declared.
@@ -135,6 +138,13 @@ function withCodeDocuments(layout: ExtensionFileViewLayout, docs: SyntaxDocument
 /** Whether `range` on `(side, line)` is the search's current pick, for the bold accent mark. */
 function isCurrentHit(current: SearchHit | null | undefined, side: "old" | "new", line: number, range: readonly [number, number]): boolean {
   return !!current && sameHitLocation(current, { side, line, range });
+}
+
+/** Hit ranges to paint in `text` shown at `(side, line)`: every match, or only the current pick's. */
+function paintedHitRanges(text: string, hits: FullFileViewOptions["hits"], side: "old" | "new", line: number | null): (readonly [number, number])[] {
+  if (!hits || line === null) return [];
+  const ranges = findLineHits(text, hits.query);
+  return hits.currentOnly ? ranges.filter((range) => isCurrentHit(hits.current, side, line, range)) : ranges;
 }
 
 /**
@@ -274,7 +284,7 @@ function buildSingleFileLayout(
     // document — a removed-line match is visible here but is not one of the navigable hits.
     const rowSide: "old" | "new" = kind === "removed" ? "old" : "new";
     const rowLine = kind === "removed" ? oldLine : newLine;
-    const hitRanges = hits && rowLine !== null ? findLineHits(text, hits.query) : [];
+    const hitRanges = paintedHitRanges(text, hits, rowSide, rowLine);
     // The marker is its own span so the row's tone stays visible on it when syntax paint colors
     // the text; an empty line adds no content span.
     const spans: ExtensionFileViewSpan[] =
@@ -327,9 +337,12 @@ function buildSingleFileLayout(
   }
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
   // Hit-splitting can push any one row well past its plain 2-span shape; on a large file with a
-  // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
+  // common query that can cross hunk's layout caps, so mark only the current pick, then nothing,
   // rather than risk the warning hunk shows for an over-cap layout.
-  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument, pick);
+  if (hits && !withinLayoutCaps(rows)) {
+    const narrowed = hits.currentOnly || !pick ? undefined : { ...hits, currentOnly: true };
+    return buildSingleFileLayout(newDocument, hunks, narrowed, oldDocument, pick);
+  }
   // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
   // extent's start on the pick's row so `selectHunk` lands the viewport there.
   const pin = deriveExtentPin(hunks, pick, rowOfNewLine);
@@ -465,7 +478,7 @@ function renderColumn(
   const fitted = fitText(cell.text, Math.max(0, contentWidth - 2), "…");
   const truncated = fitted !== cell.text && fitted.endsWith("…");
   const kept = truncated ? fitted.slice(0, -1) : fitted;
-  const hitRanges = hits ? findLineHits(kept, hits.query) : [];
+  const hitRanges = paintedHitRanges(kept, hits, side, cell.lineNumber);
   const contentSpans =
     hitRanges.length === 0
       ? [
@@ -595,10 +608,11 @@ function buildSplitRows(
 
 /**
  * `buildSplitRows` plus the layout-cap fallback chain: hit-splitting can push any row past its
- * plain shape (up to 9 spans), so first try with hits, then retry the same split columns without
- * hit-splitting, and only then give up the split presentation for a plain single column — a file
- * too big or a terminal too wide for two columns even without hits still needs that last step.
- * Every step keeps the current pick's extent pin: only the hit paint is dropped, never the landing.
+ * plain shape (up to 9 spans), so first try with every hit painted, then the same split columns
+ * painting only the current pick, then without hit paint, and only then give up the split
+ * presentation for a single column (with its own fallback chain) — a file too big or a terminal
+ * too wide for two padded columns even without hits still needs that last step. Every step keeps
+ * the current pick's extent pin: only hit paint is ever dropped, never the landing.
  */
 function buildSplitFileLayout(
   newDocument: string,
@@ -611,8 +625,12 @@ function buildSplitFileLayout(
   if (withHits === null) return null;
   if (withinLayoutCaps(withHits.rows)) return withHits;
   if (hits) {
+    if (hits.current) {
+      const currentOnly = buildSplitRows(newDocument, hunks, width, { ...hits, currentOnly: true }, oldDocument);
+      if (currentOnly !== null && withinLayoutCaps(currentOnly.rows)) return currentOnly;
+    }
     const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument, hits.current);
     if (withoutHits !== null && withinLayoutCaps(withoutHits.rows)) return withoutHits;
   }
-  return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument, hits?.current ?? null);
+  return buildSingleFileLayout(newDocument, hunks, hits, oldDocument);
 }
