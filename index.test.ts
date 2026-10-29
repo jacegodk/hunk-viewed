@@ -1070,6 +1070,7 @@ describe("search", () => {
     prompt.onKey({ sequence: "foo" }, modeContext(calls));
     prompt.onKey({ name: "enter" }, modeContext(calls));
     prompt.onExit!(modeContext(calls));
+    calls.modeActive = false;
     await pending;
     single.onEnter!(modeContext(calls));
 

@@ -581,11 +581,16 @@ describe("buildFullFileLayout out-of-diff pick pinning", () => {
     expectValidFileViewLayout(layout!, 2);
   });
 
-  test("a single-hunk file cannot pin a trailing pick (no previous extent to absorb its rows)", () => {
+  test("a single-hunk file pins a trailing pick by unmapping its hunk rows (no previous extent to absorb them)", () => {
     const oneHunk = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-line one\n+line one edited\n");
+    const unpinned = buildFullFileLayout(document(), oneHunk);
     const layout = buildFullFileLayout(document(), oneHunk, { hits: { query: "q", current: outsidePick(40) } });
     expect(layout).not.toBeNull();
-    expect(layout!.hunkRows).toEqual([{ startRow: 0, endRow: 1 }]);
+    // Rows 0-1 are the removed/added pair; document line 40 lands one row later than its number.
+    expect(layout!.hunkRows).toEqual([{ startRow: 40, endRow: layout!.rows.length - 1 }]);
+    expect(texts(layout!)[40]).toContain(" 40 ");
+    expect(layout!.rows.some((row) => row.sourceRanges)).toBe(false);
+    expect(unpinned!.rows.slice(0, 2).every((row) => row.sourceRanges)).toBe(true);
     expectValidFileViewLayout(layout!, 1);
   });
 

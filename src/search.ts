@@ -9,12 +9,6 @@ export interface SearchHit {
   side: "old" | "new";
   line: number;
   range: readonly [number, number];
-  /**
-   * True when the match sits in an unchanged region no hunk renders (found by scanning the
-   * whole document, not the patch). Hunk's `revealLine` refuses such lines, so navigating to
-   * one needs the full-file view's pinned-extent jump instead.
-   */
-  outside?: boolean;
 }
 
 /** Content-search state: the active query, its merged hits, the current pick, and the prompt. */
@@ -43,11 +37,19 @@ const listeners = new Set<() => void>();
 /** Hits reported by the full-file view's layout pass, one entry per file currently showing it. */
 let documentHits = new Map<string, readonly SearchHit[]>();
 /**
- * Out-of-diff hits per file, reported by the background document scan. A file showing the
- * full-file view reports its whole-document hits through `documentHits` instead, so its entry
- * here is ignored by `rebuildHits` but kept for identity (the scan does not re-run per toggle).
+ * Out-of-diff hits per file, reported by the background document scan, with the query and patch
+ * they were scanned for: an entry for another query (an edited search) or another patch (a reload
+ * that changed the file) is stale and ignored. A file showing the full-file view reports its
+ * whole-document hits through `documentHits` instead, so its entry here is ignored by
+ * `rebuildHits` but kept (the scan does not re-run per toggle).
  */
-let gapHits = new Map<string, { query: string; hits: readonly SearchHit[] }>();
+let gapHits = new Map<string, { query: string; patch: string; hits: readonly SearchHit[] }>();
+
+/** The out-of-diff hits stored for `file` under `query`, or null when none are current. */
+function currentGapHits(file: Pick<ExtensionDiffFile, "id" | "patch">, query: string): readonly SearchHit[] | null {
+  const entry = gapHits.get(file.id);
+  return entry && entry.query === query && entry.patch === file.patch ? entry.hits : null;
+}
 
 function publish(patch: Partial<SearchState>) {
   state = { ...state, ...patch };
@@ -175,7 +177,7 @@ export function scanGapHits(file: Pick<ExtensionDiffFile, "id" | "path" | "patch
     const line = index + 1;
     if (isNewLineInHunk(hunks, line)) return;
     for (const range of findLineHits(text, query)) {
-      hits.push({ fileId: file.id, filePath: file.path, side: "new", line, range, outside: true });
+      hits.push({ fileId: file.id, filePath: file.path, side: "new", line, range });
     }
   });
   return hits;
@@ -228,12 +230,12 @@ export function setDocumentHits(fileId: string, hits: readonly SearchHit[]): boo
 }
 
 /**
- * Store one file's out-of-diff hits for `query`; the caller rebuilds hits next. The query rides
- * along so a re-applied search can skip files already scanned for it, and a stale scan (the
- * query changed mid-read) is ignored by the scanner before it ever calls this.
+ * Store one file's out-of-diff hits for `query`, scanned against `file.patch`; the caller rebuilds
+ * hits next. A stale scan (the query changed mid-read) is ignored by the scanner before it ever
+ * calls this.
  */
-export function setGapHits(fileId: string, query: string, hits: readonly SearchHit[]): void {
-  gapHits.set(fileId, { query, hits });
+export function setGapHits(file: Pick<ExtensionDiffFile, "id" | "patch">, query: string, hits: readonly SearchHit[]): void {
+  gapHits.set(file.id, { query, patch: file.patch, hits });
   publish({});
 }
 
@@ -299,7 +301,7 @@ export function rebuildHits(visibleFiles: readonly ExtensionDiffFile[], options?
   for (const file of visibleFiles) {
     if (options?.excludeFileIds?.has(file.id)) continue;
     if (state.fullViewFileIds.has(file.id)) nextHits.push(...(documentHits.get(file.id) ?? []));
-    else nextHits.push(...mergeFileHits(scanPatchHits(file, state.query), gapHits.get(file.id)?.hits ?? []));
+    else nextHits.push(...mergeFileHits(scanPatchHits(file, state.query), currentGapHits(file, state.query) ?? []));
   }
   const pinnedIndex = pinned ? nextHits.findIndex((hit) => sameHit(hit, pinned)) : -1;
   const nextIndex = pinnedIndex !== -1 ? pinnedIndex : clampIndex(state.currentIndex, nextHits.length);
@@ -332,9 +334,9 @@ export function pickIndex(index: number): void {
   publish({ currentIndex: clampIndex(index, state.hits.length) });
 }
 
-/** Whether `fileId` already has out-of-diff hits stored for `query` (a null read counts as scanned). */
-export function hasGapHitsFor(fileId: string, query: string): boolean {
-  return gapHits.get(fileId)?.query === query;
+/** Whether `file` already has current out-of-diff hits stored for `query`. */
+export function hasGapHitsFor(file: Pick<ExtensionDiffFile, "id" | "patch">, query: string): boolean {
+  return currentGapHits(file, query) !== null;
 }
 
 /** Clear the query, hits, index, prompt, and out-of-diff scan results. Keeps `fullViewFileIds`. */

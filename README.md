@@ -77,11 +77,13 @@ previous file and never skip viewed files. Rebind any command in `~/.config/hunk
 `Search: text  3/17 hits  file:line`; `Esc` cancels; an empty `Enter` clears the search and hides
 the bar.
 
-The search scans visible files only: patch lines (context and added text on the new side, removed
-text on the old side) for a normal diff file, or the whole new-side document for a file currently
-showing the full file view (`F`). Hiding a file with hunk's filter, entering single-file mode, or
-toggling the full file view changes what is scanned and the hit count with it. Files marked viewed
-are not searched; press `V` to unmark and include them.
+The search scans visible files only, and the whole new-side document of each, not just the diff:
+patch lines (context and added text on the new side, removed text on the old side) are hits at
+once, and a background read of each file adds the matches in unchanged code no hunk shows, so the
+hit count can grow for a moment after `Enter`. Stepping to a match outside the diff opens that file
+in the full file view (`F`) and lands on the match. Hiding a file with hunk's filter or entering
+single-file mode changes what is scanned and the hit count with it. Searching from single-file mode
+keeps the mode on. Files marked viewed are not searched; press `V` to unmark and include them.
 
 Hits are highlighted on their exact matched characters, the current hit stronger than the rest. In
 the full file view hits use the accent color instead of hunk's own search tones. `ctrl+n` or `ctrl+f`/`f3`
@@ -123,11 +125,13 @@ end with a notice.
   full-file view guesses split when the review body is at least 116 columns wide, which matches
   hunk's own threshold at default pane sizes. After you switch layout mode with `1`, `2`, or `0`,
   press `F` twice on an open full-file view to re-render it.
-- Search has no regex; matching is case-insensitive substring only. A hit inside collapsed context
-  lands on its hunk, not the exact line (hunk's `revealLine` fallback). In the full file view, hits
+- Search has no regex; matching is case-insensitive substring only. In the full file view, hits
   in removed lines are painted but are not navigable hits, because only the new-side document is
-  scanned. At most 100 hits per line and 2,000 per file are highlighted; the full file view falls
-  back to hits-free rendering (still full, just unmarked) on very large files. `shift+f3` and
+  scanned. Landing on a match outside the diff selects the hunk next to it, so hunk's selected-hunk
+  tint runs from the match to the end of that hunk. In a file with a single hunk, an inline note in
+  that hunk keeps the file on the normal diff while the current match is after the hunk. At most
+  100 hits per line and 2,000 per file are highlighted; on very large files the full file view
+  highlights only the current match, or as a last resort none (it still lands on the match). `shift+f3` and
   `ctrl+shift+f` need a terminal with the kitty keyboard protocol; on others `shift+f3` is dropped
   and `ctrl+shift+f` acts as `ctrl+f`. The defaults stay clear of every key hunk 0.22 binds itself (`v`, `N`, `n` are taken there); on
   a hunk that binds one of these anyway, it warns at startup and leaves the command unbound. A

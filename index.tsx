@@ -142,17 +142,30 @@ function fullViewCanShow(file: ExtensionDiffFile): boolean {
  * hit's row for `selectHunk` to land on.
  */
 async function revealHit(ctx: ExtensionCommandContext, hit: SearchHit): Promise<void> {
-  if (hit.side === "old") {
-    ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
-    return;
-  }
+  const token = ++revealToken;
   const file = getReviewMirror().files.find((candidate) => candidate.id === hit.fileId);
   const hunks = file ? parseUnifiedPatch(file.patch) : [];
-  if (hunks.length === 0 || isNewLineInHunk(hunks, hit.line)) {
-    ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
+  if (hit.side === "old" || hunks.length === 0 || isNewLineInHunk(hunks, hit.line)) {
+    const reveal = () => ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
+    // A full view re-lays out for the new pick asynchronously, and the layout it replaces may
+    // have pinned extents or unmapped this hunk's rows for the previous pick.
+    reveal();
+    if (getSearchState().fullViewFileIds.has(hit.fileId)) landAgainLater(token, reveal);
     return;
   }
-  await revealOutsideDiff(ctx, hit, hunks);
+  await revealOutsideDiff(ctx, hit, hunks, token);
+}
+
+/** Bumped by every reveal, so a superseded reveal's pending landings stop instead of yanking the view back. */
+let revealToken = 0;
+
+/** Repeat `land` across the next few frames (a layout rebuild is async) while `token` is still the latest reveal. */
+function landAgainLater(token: number, land: () => void): void {
+  for (const delay of [30, 150, 400, 900]) {
+    setTimeout(() => {
+      if (token === revealToken) land();
+    }, delay);
+  }
 }
 
 /**
@@ -162,7 +175,7 @@ async function revealHit(ctx: ExtensionCommandContext, hit: SearchHit): Promise<
  * is retried across a few frames — a `selectHunk` aimed at the same pinned extent is idempotent.
  * Files the full view cannot present degrade to the nearest hunk plus a notice.
  */
-async function revealOutsideDiff(ctx: ExtensionCommandContext, hit: SearchHit, hunks: readonly PatchHunk[]): Promise<void> {
+async function revealOutsideDiff(ctx: ExtensionCommandContext, hit: SearchHit, hunks: readonly PatchHunk[], token: number): Promise<void> {
   const owner = gapOwnerForNewLine(hunks, hit.line);
   if (!owner) return;
   const file = getReviewMirror().files.find((candidate) => candidate.id === hit.fileId);
@@ -182,19 +195,20 @@ async function revealOutsideDiff(ctx: ExtensionCommandContext, hit: SearchHit, h
   if (getReviewMirror().selectedFileId !== hit.fileId) {
     ctx.navigation.selectFile(hit.fileId);
     await waitFor(() => getReviewMirror().selectedFileId === hit.fileId);
+    if (token !== revealToken) return;
   }
   if (!ctx.fileViews.isActive(FULL_VIEW_ID)) {
     ctx.fileViews.select(FULL_VIEW_ID);
     ctx.fileViews.refresh(FULL_VIEW_ID);
     if (!alreadyFull) ctx.notify("Match is outside the diff — showing the full file", "info");
-    if (!(await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID)))) {
+    const presented = await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID));
+    if (token !== revealToken) return;
+    if (!presented) {
       land();
       return;
     }
   }
-  for (const delay of [30, 150, 400, 900]) {
-    setTimeout(land, delay);
-  }
+  landAgainLater(token, land);
 }
 
 /**
@@ -267,10 +281,13 @@ async function scanGapHitsAcrossFiles(ctx: ExtensionCommandContext): Promise<voi
   const excluded = viewedFileIds(visible);
   for (const file of visible) {
     if (token !== gapScanToken || getSearchState().query !== query) return;
-    if (excluded.has(file.id) || getSearchState().fullViewFileIds.has(file.id) || hasGapHitsFor(file.id, query)) continue;
+    if (excluded.has(file.id) || getSearchState().fullViewFileIds.has(file.id) || hasGapHitsFor(file, query)) continue;
     const document = await workspace.readDocument(file.id, "new");
     if (token !== gapScanToken || getSearchState().query !== query) return;
-    setGapHits(file.id, query, document === null ? [] : scanGapHits(file, document, query));
+    // A null read is not recorded as scanned: it also comes from a context a reload invalidated,
+    // and the next step's scan should retry the file then.
+    if (document === null) continue;
+    setGapHits(file, query, scanGapHits(file, document, query));
     rebuildVisibleHits();
   }
   await finishInitialLanding(ctx);
@@ -366,6 +383,11 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
 /** Re-enter single-file mode after the search prompt displaced it, without reloading. */
 function resumeSingle(ctx: ExtensionCommandContext): void {
   if (!singleSuspended) return;
+  // Never displaced (the prompt's own mode failed to start): no `onEnter` will clear the flag.
+  if (ctx.keyboardModes.isActive(SINGLE_MODE_ID)) {
+    singleSuspended = false;
+    return;
+  }
   if (ctx.keyboardModes.enterMode(SINGLE_MODE_ID)) return;
   singleSuspended = false;
   exitSingleFile(getSingleFileState().targetPath);
@@ -374,6 +396,9 @@ function resumeSingle(ctx: ExtensionCommandContext): void {
 
 /** Register the hunk-viewed pane, commands, keyboard mode, and event handlers. */
 export default function (hunk: HunkExtensionAPI) {
+  singleSuspended = false;
+  initialLandingPending = false;
+  appliedReveal = null;
   const stateFilePath = resolveViewedFilePath(process.env, process.platform, homedir());
   let saveFailureNotified = false;
 
@@ -483,7 +508,8 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.on("filter_changed", ({ filter }) => {
     setMirrorFilter(filter);
     rebuildHitsIfActive();
-  });  hunk.on("layout_changed", ({ layout }) => setMirrorResolvedLayout(layout));
+  });
+  hunk.on("layout_changed", ({ layout }) => setMirrorResolvedLayout(layout));
 
   hunk.transformChangeset((changeset) => {
     setMirrorAllFiles(
