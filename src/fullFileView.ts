@@ -7,7 +7,7 @@ import type {
 } from "hunkdiff/extension";
 import { fitText, padText, textWidth } from "./sidebar/text";
 import { findLineHits, sameHitLocation, type SearchHit } from "./search";
-import type { PatchHunk } from "./unifiedPatch";
+import { gapOwnerForNewLine, isNewLineInHunk, type PatchHunk } from "./unifiedPatch";
 
 /** Id of the full-file presentation, qualified by hunk as `hunk-viewed:full`. */
 export const FULL_VIEW_ID = "full";
@@ -58,8 +58,11 @@ function withinLayoutCaps(rows: readonly ExtensionFileViewRow[]): boolean {
 export interface FullFileViewOptions {
   columns?: "single" | "split";
   width?: number;
-  /** Active search query and current pick, so rows can mark hit text as they render. */
-  hits?: { query: string; current: SearchHit | null };
+  /**
+   * Active search query and current pick, so rows can mark hit text as they render. `currentOnly`
+   * marks just the pick: the over-cap fallback keeps it visible when painting every hit cannot fit.
+   */
+  hits?: { query: string; current: SearchHit | null; currentOnly?: boolean };
   /**
    * The old-side document, when readable. Lets the old column of a split context row reference
    * it for syntax paint; the new side is always declared.
@@ -137,6 +140,13 @@ function isCurrentHit(current: SearchHit | null | undefined, side: "old" | "new"
   return !!current && sameHitLocation(current, { side, line, range });
 }
 
+/** Hit ranges to paint in `text` shown at `(side, line)`: every match, or only the current pick's. */
+function paintedHitRanges(text: string, hits: FullFileViewOptions["hits"], side: "old" | "new", line: number | null): (readonly [number, number])[] {
+  if (!hits || line === null) return [];
+  const ranges = findLineHits(text, hits.query);
+  return hits.currentOnly ? ranges.filter((range) => isCurrentHit(hits.current, side, line, range)) : ranges;
+}
+
 /**
  * Split `text` into spans at every hit in `ranges` (already located in `text`): plain runs keep
  * `tone` and reference their slice of the source line for syntax paint, each hit becomes `accent`
@@ -177,6 +187,59 @@ function documentLines(document: string): string[] {
   return lines;
 }
 
+/** Where a search pick outside the diff wants the view to land: the owning hunk's extent, pinned. */
+interface ExtentPin {
+  ownerIndex: number;
+  /** Zero-based row the owning extent should start at: the pick's row. */
+  row: number;
+  /** True when the pick sits after the last hunk's rows, so the previous extent must absorb them. */
+  trailing: boolean;
+}
+
+/**
+ * Derive an extent pin from the current search pick when it lies outside every hunk. Hunk's
+ * `revealLine` refuses lines no hunk contains, but `selectHunk` navigates a presented file view
+ * by its `hunkRows` extents — starting an extent on the pick's row lands the viewport there.
+ * Returns null for in-diff picks (plain `revealLine` handles those) and for picks whose row the
+ * layout did not emit.
+ */
+function deriveExtentPin(hunks: readonly PatchHunk[], current: SearchHit | null | undefined, rowOfNewLine: ReadonlyMap<number, number>): ExtentPin | null {
+  if (!current || current.side !== "new") return null;
+  // In-diff picks are revealLine's job; pinning their extent would strip the hunk rows that
+  // precede the pick out of their own extent and get the layout rejected.
+  if (isNewLineInHunk(hunks, current.line)) return null;
+  const owner = gapOwnerForNewLine(hunks, current.line);
+  if (owner === null) return null;
+  const row = rowOfNewLine.get(current.line);
+  if (row === undefined) return null;
+  return { ownerIndex: owner.index, row, trailing: owner.trailing };
+}
+
+/**
+ * Pin one hunk extent's start on `pin.row`, keeping every row that carries `sourceRanges`
+ * (hunk rows do) inside exactly one extent: the previous extent absorbs the owner's rows when
+ * the pin sits beyond them (a trailing-region pick). A lone-hunk file has no previous extent, so
+ * its hunk rows give up their `sourceRanges` instead — `revealLine` still resolves those lines by
+ * hunk, but an inline note in that hunk cannot be placed while such a pick is current.
+ */
+function applyExtentPin(rows: ExtensionFileViewRow[], hunkRows: { startRow: number; endRow: number }[], pin: ExtentPin): void {
+  const lastRowIndex = rows.length - 1;
+  if (pin.trailing) {
+    const owner = hunkRows[pin.ownerIndex]!;
+    if (pin.ownerIndex === 0) {
+      for (let row = owner.startRow; row <= owner.endRow; row += 1) {
+        const { sourceRanges: _dropped, ...unmapped } = rows[row]!;
+        rows[row] = unmapped;
+      }
+    } else {
+      hunkRows[pin.ownerIndex - 1] = { startRow: hunkRows[pin.ownerIndex - 1]!.startRow, endRow: owner.endRow };
+    }
+    hunkRows[pin.ownerIndex] = { startRow: pin.row, endRow: lastRowIndex };
+    return;
+  }
+  hunkRows[pin.ownerIndex] = { startRow: pin.row, endRow: hunkRows[pin.ownerIndex]!.endRow };
+}
+
 /**
  * Rebuild the whole file as a unified diff with unlimited context.
  *
@@ -207,6 +270,7 @@ function buildSingleFileLayout(
   hunks: readonly PatchHunk[],
   hits?: FullFileViewOptions["hits"],
   oldDocument?: string | null,
+  pick: SearchHit | null = hits?.current ?? null,
 ): ExtensionFileViewLayout | null {
   const lines = documentLines(newDocument);
   if (lines.length > FULL_VIEW_MAX_ROWS) return null;
@@ -214,8 +278,11 @@ function buildSingleFileLayout(
   const gutterWidth = String(Math.max(1, lines.length)).length;
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
+  /** Zero-based row each new-side document line landed on, for out-of-diff pick pinning. */
+  const rowOfNewLine = new Map<number, number>();
 
   const push = (kind: "context" | "added" | "removed", text: string, newLine: number | null, oldLine: number | null, inHunk: boolean) => {
+    if (newLine !== null) rowOfNewLine.set(newLine, rows.length);
     const number = newLine === null ? " ".repeat(gutterWidth) : String(newLine).padStart(gutterWidth);
     const marker = kind === "added" ? "+" : kind === "removed" ? "-" : " ";
     const tone: ExtensionFileViewSpan["tone"] | undefined = kind === "added" ? "added" : kind === "removed" ? "removed" : undefined;
@@ -226,7 +293,7 @@ function buildSingleFileLayout(
     // document — a removed-line match is visible here but is not one of the navigable hits.
     const rowSide: "old" | "new" = kind === "removed" ? "old" : "new";
     const rowLine = kind === "removed" ? oldLine : newLine;
-    const hitRanges = hits && rowLine !== null ? findLineHits(text, hits.query) : [];
+    const hitRanges = paintedHitRanges(text, hits, rowSide, rowLine);
     // The marker is its own span so the row's tone stays visible on it when syntax paint colors
     // the text; an empty line adds no content span.
     const spans: ExtensionFileViewSpan[] =
@@ -279,9 +346,16 @@ function buildSingleFileLayout(
   }
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
   // Hit-splitting can push any one row well past its plain 2-span shape; on a large file with a
-  // common query that can cross hunk's layout caps, so drop hit-splitting and rebuild plain
+  // common query that can cross hunk's layout caps, so mark only the current pick, then nothing,
   // rather than risk the warning hunk shows for an over-cap layout.
-  if (hits && !withinLayoutCaps(rows)) return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  if (hits && !withinLayoutCaps(rows)) {
+    const narrowed = hits.currentOnly || !pick ? undefined : { ...hits, currentOnly: true };
+    return buildSingleFileLayout(newDocument, hunks, narrowed, oldDocument, pick);
+  }
+  // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
+  // extent's start on the pick's row so `selectHunk` lands the viewport there.
+  const pin = deriveExtentPin(hunks, pick, rowOfNewLine);
+  if (pin) applyExtentPin(rows, hunkRows, pin);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
@@ -413,7 +487,7 @@ function renderColumn(
   const fitted = fitText(cell.text, Math.max(0, contentWidth - 2), "…");
   const truncated = fitted !== cell.text && fitted.endsWith("…");
   const kept = truncated ? fitted.slice(0, -1) : fitted;
-  const hitRanges = hits ? findLineHits(kept, hits.query) : [];
+  const hitRanges = paintedHitRanges(kept, hits, side, cell.lineNumber);
   const contentSpans =
     hitRanges.length === 0
       ? [
@@ -461,6 +535,7 @@ function buildSplitRows(
   width: number,
   hits?: FullFileViewOptions["hits"],
   oldDocument?: string | null,
+  pick: SearchHit | null = hits?.current ?? null,
 ): ExtensionFileViewLayout | null {
   const built = buildEntries(newDocument, hunks);
   if (built === null) return null;
@@ -469,6 +544,8 @@ function buildSplitRows(
   const colWidth = Math.floor((width - 3) / 2);
   const rows: ExtensionFileViewRow[] = [];
   const hunkRows: { startRow: number; endRow: number }[] = [];
+  /** Zero-based row each new-side document line landed on, for out-of-diff pick pinning. */
+  const rowOfNewLine = new Map<number, number>();
 
   const contextCell = (entry: FullFileEntry, lineNumber: number): SplitCell => ({ text: entry.text, lineNumber, marker: " ", tone: undefined });
   const removedCell = (entry: FullFileEntry): SplitCell => ({ text: entry.text, lineNumber: entry.oldLine!, marker: "-", tone: "removed" });
@@ -476,6 +553,7 @@ function buildSplitRows(
 
   /** Push one row and, when it falls inside a hunk, attach `sourceRanges` for the present side(s). */
   const emit = (left: SplitCell | null, right: SplitCell | null, inHunk: boolean, oldLine: number | null, newLine: number | null) => {
+    if (newLine !== null) rowOfNewLine.set(newLine, rows.length);
     pushSplitRow(rows, gutterWidthOld, gutterWidthNew, colWidth, left, right, hits, docs);
     if (!inHunk) return;
     const sourceRanges: { side: "old" | "new"; range: readonly [number, number] }[] = [];
@@ -525,19 +603,25 @@ function buildSplitRows(
     }
     // Context-fill entry outside any hunk: same text and marker on both sides, own line numbers.
     const entry = entries[i]!;
-    emit(contextCell(entry, entry.oldLine!), contextCell(entry, entry.newLine!), false, null, null);
+    emit(contextCell(entry, entry.oldLine!), contextCell(entry, entry.newLine!), false, null, entry.newLine);
     i += 1;
   }
 
   if (rows.length > FULL_VIEW_MAX_ROWS) return null;
+  // An out-of-diff search pick cannot be reached by hunk's `revealLine`; pin the owning hunk
+  // extent's start on the pick's row so `selectHunk` lands the viewport there.
+  const pin = deriveExtentPin(hunks, pick, rowOfNewLine);
+  if (pin) applyExtentPin(rows, hunkRows, pin);
   return withCodeDocuments({ rows, hunkRows }, docs);
 }
 
 /**
  * `buildSplitRows` plus the layout-cap fallback chain: hit-splitting can push any row past its
- * plain shape (up to 9 spans), so first try with hits, then retry the same split columns without
- * hit-splitting, and only then give up the split presentation for a plain single column — a file
- * too big or a terminal too wide for two columns even without hits still needs that last step.
+ * plain shape (up to 9 spans), so first try with every hit painted, then the same split columns
+ * painting only the current pick, then without hit paint, and only then give up the split
+ * presentation for a single column (with its own fallback chain) — a file too big or a terminal
+ * too wide for two padded columns even without hits still needs that last step. Every step keeps
+ * the current pick's extent pin: only hit paint is ever dropped, never the landing.
  */
 function buildSplitFileLayout(
   newDocument: string,
@@ -550,8 +634,12 @@ function buildSplitFileLayout(
   if (withHits === null) return null;
   if (withinLayoutCaps(withHits.rows)) return withHits;
   if (hits) {
-    const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument);
+    if (hits.current) {
+      const currentOnly = buildSplitRows(newDocument, hunks, width, { ...hits, currentOnly: true }, oldDocument);
+      if (currentOnly !== null && withinLayoutCaps(currentOnly.rows)) return currentOnly;
+    }
+    const withoutHits = buildSplitRows(newDocument, hunks, width, undefined, oldDocument, hits.current);
     if (withoutHits !== null && withinLayoutCaps(withoutHits.rows)) return withoutHits;
   }
-  return buildSingleFileLayout(newDocument, hunks, undefined, oldDocument);
+  return buildSingleFileLayout(newDocument, hunks, hits, oldDocument);
 }

@@ -1054,6 +1054,35 @@ describe("search", () => {
     expect(calls.revealed).toEqual([{ fileId: "1", side: "new", line: 1 }]);
   });
 
+  test("searching from single-file mode suspends it around the prompt without reloading, then resumes it", async () => {
+    const fake = createFakeHunk();
+    registerExtension(fake.hunk);
+    const files = [makeFile("1", "a.ts", { patch: "@@ -1,1 +1,1 @@\n-x\n+foo bar\n" }), makeFile("2", "b.ts")];
+    loadChangeset(fake, files);
+    enterSingleFile("a.ts");
+    const calls = createCalls();
+    calls.modeActive = true;
+    const single = fake.keyboardModes.get("single")!;
+    const pending = fake.commands.get("search")!.handler(commandContext(files[0]!, [], [], calls));
+    // The host exits the displaced single-file mode as the prompt's mode starts.
+    single.onExit!(modeContext(calls));
+    const prompt = fake.keyboardModes.get("search-prompt")!;
+    prompt.onKey({ sequence: "foo" }, modeContext(calls));
+    prompt.onKey({ name: "enter" }, modeContext(calls));
+    prompt.onExit!(modeContext(calls));
+    calls.modeActive = false;
+    await pending;
+    single.onEnter!(modeContext(calls));
+
+    expect(calls.enteredModes).toEqual(["search-prompt", "single"]);
+    expect(calls.executed).toEqual([]);
+    expect(getSingleFileState()).toEqual({ active: true, targetPath: "a.ts", pendingPath: null, returnPath: null });
+    expect(getSearchState().query).toBe("foo");
+    // Later entries and exits of the mode reload as usual.
+    single.onExit!(modeContext(calls));
+    expect(calls.executed).toEqual(["hunk.app.refresh"]);
+  });
+
   test("backspace edits the draft", () => {
     const fake = createFakeHunk();
     registerExtension(fake.hunk);

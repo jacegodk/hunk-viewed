@@ -357,6 +357,45 @@ describe("buildFullFileLayout search hits", () => {
     expect(withHits).toEqual(withoutHits);
     expectValidFileViewLayout(withHits!, 1);
   });
+
+  test("an over-cap fallback still pins the out-of-diff pick's extent and marks only the pick, in both column modes", () => {
+    const pickOn = (line: number, length: number) => ({ fileId: "f", filePath: "f", side: "new" as const, line, range: [0, length] as [number, number] });
+    const pinnedText = (layout: ReturnType<typeof buildFullFileLayout>) => texts(layout!)[layout!.hunkRows![1]!.startRow];
+    const accents = (layout: ReturnType<typeof buildFullFileLayout>) =>
+      layout!.rows.flatMap((row) => row.spans.filter((span) => span.tone === "accent").map((span) => ({ text: span.text, bold: span.attributes?.includes("bold") ?? false })));
+
+    const aLines = Array.from({ length: 9000 }, (_, i) => `${"a".repeat(50)}${i + 1}`);
+    const aDoc = aLines.join("\n") + "\n";
+    const aHunks = parseUnifiedPatch(`@@ -1,1 +1,1 @@\n-x\n+${aLines[0]}\n@@ -9000,1 +9000,1 @@\n-x\n+${aLines[8999]}\n`);
+    const single = buildFullFileLayout(aDoc, aHunks, { hits: { query: "a", current: pickOn(5000, 1) } });
+    expect(accents(single)).toEqual([{ text: "a", bold: true }]);
+    expect(pinnedText(single)).toContain("a5000");
+    expectValidFileViewLayout(single!, 2);
+
+    const fooLines = Array.from({ length: 4000 }, (_, i) => `foo line ${i + 1}`);
+    const fooDoc = fooLines.join("\n") + "\n";
+    const fooHunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-x\n+foo line 1\n@@ -4000,1 +4000,1 @@\n-x\n+foo line 4000\n");
+    const split = buildFullFileLayout(fooDoc, fooHunks, { columns: "split", width: 200, hits: { query: "foo", current: pickOn(2000, 3) } });
+    expect(accents(split)).toEqual([{ text: "foo", bold: true }]);
+    expect(pinnedText(split)).toContain("foo line 2000");
+    expectValidFileViewLayout(split!, 2);
+  });
+
+  test("split columns too wide for hunk's character cap fall back to a single column that still paints every hit", () => {
+    // 5,200 padded 200-column rows cross the 1,000,000-character cap however little is painted;
+    // the single-column rebuild is a fraction of that and fits with every hit split out.
+    const lines = Array.from({ length: 5200 }, (_, i) => `foo line ${i + 1}`);
+    const doc = lines.join("\n") + "\n";
+    const hunks = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-x\n+foo line 1\n@@ -5200,1 +5200,1 @@\n-x\n+foo line 5200\n");
+    const current = { fileId: "f", filePath: "f", side: "new" as const, line: 2600, range: [0, 3] as [number, number] };
+    const layout = buildFullFileLayout(doc, hunks, { columns: "split", width: 200, hits: { query: "foo", current } });
+    expect(texts(layout!).some((t) => t.includes(" │ "))).toBe(false);
+    const accents = layout!.rows.flatMap((row) => row.spans.filter((span) => span.tone === "accent"));
+    expect(accents).toHaveLength(5200);
+    expect(accents.filter((span) => span.attributes?.includes("bold"))).toHaveLength(1);
+    expect(texts(layout!)[layout!.hunkRows![1]!.startRow]).toContain("foo line 2600");
+    expectValidFileViewLayout(layout!, 2);
+  });
 });
 
 describe("buildFullFileLayout syntax paint (API 24)", () => {
@@ -470,5 +509,108 @@ describe("buildFullFileLayout syntax paint (API 24)", () => {
     // An unsafe old document alone only costs the old side.
     const unsafeOld = buildFullFileLayout("b\n", hunk, { oldDocument: "a\x07\n" });
     expect(unsafeOld!.codeDocuments?.map((doc) => doc.id)).toEqual(["new"]);
+  });
+});
+
+describe("buildFullFileLayout out-of-diff pick pinning", () => {
+  // Two hunks (new-side 28-34 and 88-94) with large unchanged gaps around them.
+  const hunks = parseUnifiedPatch(
+    [
+      "@@ -28,7 +28,7 @@",
+      " filler 28",
+      " filler 29",
+      " changed 30",
+      "-filler 31",
+      "+changed 31 edited",
+      " filler 32",
+      " filler 33",
+      " filler 34",
+      "@@ -88,7 +88,7 @@",
+      " filler 88",
+      " filler 89",
+      " changed 90",
+      "-filler 91",
+      "+changed 91 edited",
+      " filler 92",
+      " filler 93",
+      " filler 94",
+    ].join("\n"),
+  );
+  // The document must agree with the patch's context/added lines or the layout declines.
+  const document = () => {
+    const lines: string[] = [];
+    for (let i = 1; i <= 120; i += 1) lines.push(`pad ${i}`);
+    lines[27] = "filler 28";
+    lines[28] = "filler 29";
+    lines[29] = "changed 30";
+    lines[30] = "changed 31 edited";
+    lines[31] = "filler 32";
+    lines[32] = "filler 33";
+    lines[33] = "filler 34";
+    lines[87] = "filler 88";
+    lines[88] = "filler 89";
+    lines[89] = "changed 90";
+    lines[90] = "changed 91 edited";
+    lines[91] = "filler 92";
+    lines[92] = "filler 93";
+    lines[93] = "filler 94";
+    return lines.join("\n") + "\n";
+  };
+  const outsidePick = (line: number) => ({ fileId: "x", filePath: "a.py", side: "new" as const, line, range: [0, 3] as const });
+
+  test("pins the owning hunk extent's start on a mid-gap pick's row", () => {
+    const layout = buildFullFileLayout(document(), hunks, { hits: { query: "q", current: outsidePick(60) } });
+    expect(layout).not.toBeNull();
+    // Rows are line-aligned until each removed row shifts them; new-side line 60 sits at row 60.
+    expect(layout!.hunkRows[1]).toEqual({ startRow: 60, endRow: 95 });
+    expectValidFileViewLayout(layout!, 2);
+  });
+
+  test("pins the first extent for a leading-gap pick", () => {
+    const layout = buildFullFileLayout(document(), hunks, { hits: { query: "q", current: outsidePick(5) } });
+    expect(layout).not.toBeNull();
+    expect(layout!.hunkRows[0]).toEqual({ startRow: 4, endRow: 34 });
+    expectValidFileViewLayout(layout!, 2);
+  });
+
+  test("a trailing-region pick extends the last extent over the tail and makes the previous extent absorb its hunk's rows", () => {
+    const layout = buildFullFileLayout(document(), hunks, { hits: { query: "q", current: outsidePick(110) } });
+    expect(layout).not.toBeNull();
+    expect(layout!.hunkRows[0]).toEqual({ startRow: 27, endRow: 95 }); // absorbs hunk two's rows
+    expect(layout!.hunkRows[1]).toEqual({ startRow: 111, endRow: 121 }); // the pinned tail extent
+    expectValidFileViewLayout(layout!, 2);
+  });
+
+  test("a single-hunk file pins a trailing pick by unmapping its hunk rows (no previous extent to absorb them)", () => {
+    const oneHunk = parseUnifiedPatch("@@ -1,1 +1,1 @@\n-line one\n+line one edited\n");
+    const unpinned = buildFullFileLayout(document(), oneHunk);
+    const layout = buildFullFileLayout(document(), oneHunk, { hits: { query: "q", current: outsidePick(40) } });
+    expect(layout).not.toBeNull();
+    // Rows 0-1 are the removed/added pair; document line 40 lands one row later than its number.
+    expect(layout!.hunkRows).toEqual([{ startRow: 40, endRow: layout!.rows.length - 1 }]);
+    expect(texts(layout!)[40]).toContain(" 40 ");
+    expect(layout!.rows.some((row) => row.sourceRanges)).toBe(false);
+    expect(unpinned!.rows.slice(0, 2).every((row) => row.sourceRanges)).toBe(true);
+    expectValidFileViewLayout(layout!, 1);
+  });
+
+  test("an in-diff pick pins nothing: revealLine addresses those lines directly", () => {
+    const unPinned = buildFullFileLayout(document(), hunks);
+    const layout = buildFullFileLayout(document(), hunks, { hits: { query: "q", current: outsidePick(30) } });
+    expect(layout!.hunkRows).toEqual(unPinned!.hunkRows);
+  });
+
+  test("a pick on the old side pins nothing: removed lines are always hunk lines", () => {
+    const layout = buildFullFileLayout(document(), hunks, { hits: { query: "q", current: { fileId: "x", filePath: "a.py", side: "old", line: 31, range: [0, 3] } } });
+    expect(layout).not.toBeNull();
+    const unPinned = buildFullFileLayout(document(), hunks);
+    expect(layout!.hunkRows).toEqual(unPinned!.hunkRows);
+  });
+
+  test("split columns pin too", () => {
+    const layout = buildFullFileLayout(document(), hunks, { columns: "split", width: 80, hits: { query: "q", current: outsidePick(60) } });
+    expect(layout).not.toBeNull();
+    expect(layout!.hunkRows[1]).toEqual({ startRow: 59, endRow: 93 });
+    expectValidFileViewLayout(layout!, 2);
   });
 });

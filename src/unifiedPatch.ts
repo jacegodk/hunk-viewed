@@ -50,3 +50,33 @@ export function parseUnifiedPatch(patch: string): PatchHunk[] {
   }
   return hunks;
 }
+
+/**
+ * Whether any hunk renders new-side line `line` (context, added, or a numbered position a
+ * reveal can address). A pure-deletion hunk (`newCount` 0) renders no new-side line, so the
+ * line it names renders as context *before* the hunk's rows.
+ */
+export function isNewLineInHunk(hunks: readonly PatchHunk[], line: number): boolean {
+  return hunks.some((hunk) => hunk.newCount > 0 && hunk.newStart <= line && line < hunk.newStart + hunk.newCount);
+}
+
+/**
+ * Which hunk's surrounding region contains new-side line `line`: its own hunk when one renders
+ * it, else the hunk whose leading gap (start of file, or the unchanged run after the previous
+ * hunk) holds it, else the last hunk for the trailing region. Returns null only when there are
+ * no hunks. Drives search's reveal of hits outside the diff: hunk's `revealLine` refuses lines
+ * no hunk contains, but a presented file view can pin the owning hunk's row extent on the hit's
+ * row and land `selectHunk` there.
+ */
+export function gapOwnerForNewLine(hunks: readonly PatchHunk[], line: number): { index: number; trailing: boolean } | null {
+  if (hunks.length === 0) return null;
+  for (let index = 0; index < hunks.length; index += 1) {
+    const hunk = hunks[index]!;
+    if (hunk.newCount > 0 && hunk.newStart <= line && line < hunk.newStart + hunk.newCount) return { index, trailing: false };
+    // A pure-deletion hunk renders no new-side line; the line it names renders before the hunk's
+    // rows, so it belongs to this hunk's leading gap.
+    const renderStart = hunk.newCount > 0 ? hunk.newStart : hunk.newStart + 1;
+    if (line < renderStart) return { index, trailing: false };
+  }
+  return { index: hunks.length - 1, trailing: true };
+}

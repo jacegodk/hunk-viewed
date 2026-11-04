@@ -17,7 +17,10 @@
  * `ctrl+f`/`f3` open the bottom-bar search prompt, or jump to the next hit when a search is
  * already active; `ctrl+n`/`ctrl+p` step to the next/previous hit. Matches are painted by a line highlighter
  * in the normal diff and as accent spans in the full-file view; viewed files are excluded from
- * the scan.
+ * the scan. A background pass also scans each visible file's whole document, so matches in
+ * unchanged regions no hunk renders are hits too; navigating to one presents the file with the
+ * full-file view and lands its pinned row extent on the match, since hunk's `revealLine` refuses
+ * lines outside the diff.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -49,16 +52,21 @@ import {
   currentHit,
   editDraft,
   getSearchState,
+  hasGapHitsFor,
   openPrompt,
+  pickIndex,
   pruneSearchFiles,
   rebuildHits,
   sameHit,
   scanDocumentHits,
+  scanGapHits,
   scanPatchHits,
   setDocumentHits,
   setFullViewFile,
+  setGapHits,
   setQuery,
   stepHit,
+  type SearchHit,
 } from "./src/search";
 import {
   applySingleFileTransform,
@@ -71,7 +79,7 @@ import {
 } from "./src/singleFile";
 import { FilesPane } from "./src/sidebar/FilesPane";
 import { SearchBar } from "./src/sidebar/SearchBar";
-import { parseUnifiedPatch } from "./src/unifiedPatch";
+import { gapOwnerForNewLine, isNewLineInHunk, parseUnifiedPatch, type PatchHunk } from "./src/unifiedPatch";
 import { readRepoFiles, resolveViewedFilePath, writeRepoFiles } from "./src/viewedFile";
 import { clearRepo, getViewedState, isViewed, loadRepo, reconcileViewed, setPersist, toggleViewed } from "./src/viewedStore";
 
@@ -117,11 +125,90 @@ function refreshSearchIfActive(ctx: ExtensionCommandContext): void {
   rebuildVisibleHits();
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
+  void scanGapHitsAcrossFiles(ctx);
 }
 
 /** Whether the full view can present `file`: readable source with hunks, not deleted or binary. */
 function fullViewCanShow(file: ExtensionDiffFile): boolean {
   return !file.isBinary && !file.isTooLarge && (file.hunks?.length ?? 0) > 0 && file.changeType !== "deleted";
+}
+
+/**
+ * Reveal one hit in the review stream.
+ *
+ * In-diff lines — and every removed-line hit — go through `revealLine`. A new-side line no hunk
+ * renders is refused by `revealLine` ("found no new line"), so `revealOutsideDiff` presents the
+ * file with the full-file view instead, whose layout pins the owning hunk's row extent on the
+ * hit's row for `selectHunk` to land on.
+ */
+async function revealHit(ctx: ExtensionCommandContext, hit: SearchHit): Promise<void> {
+  const token = ++revealToken;
+  const file = getReviewMirror().files.find((candidate) => candidate.id === hit.fileId);
+  const hunks = file ? parseUnifiedPatch(file.patch) : [];
+  if (hit.side === "old" || hunks.length === 0 || isNewLineInHunk(hunks, hit.line)) {
+    const reveal = () => ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
+    // A full view re-lays out for the new pick asynchronously, and the layout it replaces may
+    // have pinned extents or unmapped this hunk's rows for the previous pick.
+    reveal();
+    if (getSearchState().fullViewFileIds.has(hit.fileId)) landAgainLater(token, reveal);
+    return;
+  }
+  await revealOutsideDiff(ctx, hit, hunks, token);
+}
+
+/** Bumped by every reveal, so a superseded reveal's pending landings stop instead of yanking the view back. */
+let revealToken = 0;
+
+/** Repeat `land` across the next few frames (a layout rebuild is async) while `token` is still the latest reveal. */
+function landAgainLater(token: number, land: () => void): void {
+  for (const delay of [30, 150, 400, 900]) {
+    setTimeout(() => {
+      if (token === revealToken) land();
+    }, delay);
+  }
+}
+
+/**
+ * Bring an out-of-diff hit on screen: present the file with the full-file view (which renders
+ * the whole document, hit painted), let its layout pin the owning hunk extent's start on the
+ * hit's row, then land `selectHunk` on that extent. The layout rebuild is async, so the landing
+ * is retried across a few frames — a `selectHunk` aimed at the same pinned extent is idempotent.
+ * Files the full view cannot present degrade to the nearest hunk plus a notice.
+ */
+async function revealOutsideDiff(ctx: ExtensionCommandContext, hit: SearchHit, hunks: readonly PatchHunk[], token: number): Promise<void> {
+  const owner = gapOwnerForNewLine(hunks, hit.line);
+  if (!owner) return;
+  const file = getReviewMirror().files.find((candidate) => candidate.id === hit.fileId);
+  const land = () => ctx.navigation.selectHunk(hit.fileId, owner.index);
+  if (!file || !fullViewCanShow(file)) {
+    land();
+    ctx.notify(`Match at line ${hit.line} is outside the diff; landed on the nearest hunk`, "info");
+    return;
+  }
+  const alreadyFull = getSearchState().fullViewFileIds.has(hit.fileId);
+  if (!alreadyFull) {
+    if (isFullViewCollapsed(hit.fileId)) uncollapseFullView(hit.fileId);
+    setFullViewFile(hit.fileId, true);
+  }
+  // `fileViews.select`/`isActive` act on the selected file, so the hit's file must be selected
+  // first — and hunk, not `fullViewFileIds`, is the authority on whether it presents the view.
+  if (getReviewMirror().selectedFileId !== hit.fileId) {
+    ctx.navigation.selectFile(hit.fileId);
+    await waitFor(() => getReviewMirror().selectedFileId === hit.fileId);
+    if (token !== revealToken) return;
+  }
+  if (!ctx.fileViews.isActive(FULL_VIEW_ID)) {
+    ctx.fileViews.select(FULL_VIEW_ID);
+    ctx.fileViews.refresh(FULL_VIEW_ID);
+    if (!alreadyFull) ctx.notify("Match is outside the diff — showing the full file", "info");
+    const presented = await waitFor(() => ctx.fileViews.isActive(FULL_VIEW_ID));
+    if (token !== revealToken) return;
+    if (!presented) {
+      land();
+      return;
+    }
+  }
+  landAgainLater(token, land);
 }
 
 /**
@@ -136,6 +223,76 @@ function fullViewMatches(file: ExtensionDiffFile): boolean {
 /** Resolver for the open search prompt; settled by Enter (with the draft) or Esc (`null`). */
 let promptResolve: ((value: string | null) => void) | null = null;
 
+/**
+ * Set while the search prompt displaces single-file mode (one keyboard mode at a time), so the
+ * mode's exit and re-entry skip their reloads: a reload would drop the one-file view and
+ * invalidate the search command's context, which the prompt's result is applied through.
+ */
+let singleSuspended = false;
+
+/**
+ * Bumped by every search apply/clear so a background out-of-diff scan for a superseded query
+ * stops merging its results.
+ */
+let gapScanToken = 0;
+/**
+ * Set by `applySearch` until the scan it started finishes: that scan lands the true first hit
+ * (an out-of-diff match may precede the patch pick, or be the only match). Stepping clears it,
+ * so a later scan never yanks the user back to the first hit.
+ */
+let initialLandingPending = false;
+/** The hit `applySearch` revealed synchronously (a patch hit), or null when it had none. */
+let appliedReveal: SearchHit | null = null;
+
+/** Land the first hit once the applied query's scan settles, unless the user moved meanwhile. */
+async function finishInitialLanding(ctx: ExtensionCommandContext): Promise<void> {
+  if (!initialLandingPending) return;
+  initialLandingPending = false;
+  const first = getSearchState().hits[0] ?? null;
+  if (!first) {
+    ctx.notify("No hits", "info");
+    return;
+  }
+  if (appliedReveal && sameHit(appliedReveal, first)) return;
+  pickIndex(0);
+  ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
+  await revealHit(ctx, first);
+}
+
+/**
+ * Scan every visible file's unchanged regions for the active query, one file at a time, merging
+ * hits as each document read lands. The patch scan is synchronous and instant; this fills in the
+ * matches `scanPatchHits` cannot see. Skips viewed (folded) files, files the full-file view
+ * already reports whole-document hits for, and files already scanned for this query. A superseded
+ * scan (new query applied, search cleared, review reloaded) stops at the next boundary.
+ */
+async function scanGapHitsAcrossFiles(ctx: ExtensionCommandContext): Promise<void> {
+  const query = getSearchState().query;
+  if (query === "") return;
+  // `workspace` is documented on command contexts, but tolerate hosts or test harnesses that
+  // omit it: without document reads there is no out-of-diff scan.
+  const workspace = (ctx as Partial<ExtensionCommandContext>).workspace;
+  if (!workspace) {
+    await finishInitialLanding(ctx);
+    return;
+  }
+  const token = ++gapScanToken;
+  const visible = visibleFiles(getReviewMirror());
+  const excluded = viewedFileIds(visible);
+  for (const file of visible) {
+    if (token !== gapScanToken || getSearchState().query !== query) return;
+    if (excluded.has(file.id) || getSearchState().fullViewFileIds.has(file.id) || hasGapHitsFor(file, query)) continue;
+    const document = await workspace.readDocument(file.id, "new");
+    if (token !== gapScanToken || getSearchState().query !== query) return;
+    // A null read is not recorded as scanned: it also comes from a context a reload invalidated,
+    // and the next step's scan should retry the file then.
+    if (document === null) continue;
+    setGapHits(file, query, scanGapHits(file, document, query));
+    rebuildVisibleHits();
+  }
+  await finishInitialLanding(ctx);
+}
+
 /** Apply a submitted query: rebuild hits, refresh presentation, and reveal (or notice) the first pick. */
 function applySearch(ctx: ExtensionCommandContext, query: string): void {
   setQuery(query);
@@ -143,12 +300,15 @@ function applySearch(ctx: ExtensionCommandContext, query: string): void {
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
   const hit = currentHit();
-  if (hit) ctx.navigation.revealLine(hit.fileId, hit.side, hit.line);
-  else ctx.notify("No hits", "info");
+  initialLandingPending = true;
+  appliedReveal = hit;
+  if (hit) void revealHit(ctx, hit);
+  void scanGapHitsAcrossFiles(ctx);
 }
 
 /** Clear the active search, its highlights, and its bottom-bar pane. */
 function applyClear(ctx: ExtensionCommandContext): void {
+  initialLandingPending = false;
   clearSearch();
   ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID);
   ctx.fileViews.refresh(FULL_VIEW_ID);
@@ -172,7 +332,11 @@ function moveHit(ctx: ExtensionCommandContext, direction: 1 | -1): void {
     ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID, { fileId });
     ctx.fileViews.refresh(FULL_VIEW_ID, { fileId });
   }
-  ctx.navigation.revealLine(step.hit.fileId, step.hit.side, step.hit.line);
+  // The user moved: the applied query's scan must no longer re-land on the first hit. Stepping
+  // is also the chance to resume the out-of-diff scan after a reload dropped it.
+  initialLandingPending = false;
+  void scanGapHitsAcrossFiles(ctx);
+  void revealHit(ctx, step.hit);
   if (step.wrapped) ctx.notify(direction === 1 ? "Wrapped to the first hit" : "Wrapped to the last hit", "info");
 }
 
@@ -192,7 +356,9 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
     promptResolve = null;
   }
   ctx.panes.open(SEARCH_PANE_ID);
+  singleSuspended = ctx.keyboardModes.isActive(SINGLE_MODE_ID);
   if (!ctx.keyboardModes.enterMode(SEARCH_PROMPT_MODE_ID)) {
+    resumeSingle(ctx);
     closePrompt();
     ctx.panes.close(SEARCH_PANE_ID);
     ctx.notify("Could not open the search prompt", "warning");
@@ -202,6 +368,7 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
   const value = await new Promise<string | null>((resolve) => {
     promptResolve = resolve;
   });
+  resumeSingle(ctx);
   if (value === null) {
     if (getSearchState().query === "") ctx.panes.close(SEARCH_PANE_ID);
     return;
@@ -213,8 +380,25 @@ async function runPrompt(ctx: ExtensionCommandContext, initial: string): Promise
   applySearch(ctx, value);
 }
 
+/** Re-enter single-file mode after the search prompt displaced it, without reloading. */
+function resumeSingle(ctx: ExtensionCommandContext): void {
+  if (!singleSuspended) return;
+  // Never displaced (the prompt's own mode failed to start): no `onEnter` will clear the flag.
+  if (ctx.keyboardModes.isActive(SINGLE_MODE_ID)) {
+    singleSuspended = false;
+    return;
+  }
+  if (ctx.keyboardModes.enterMode(SINGLE_MODE_ID)) return;
+  singleSuspended = false;
+  exitSingleFile(getSingleFileState().targetPath);
+  ctx.commands.execute("hunk.app.refresh");
+}
+
 /** Register the hunk-viewed pane, commands, keyboard mode, and event handlers. */
 export default function (hunk: HunkExtensionAPI) {
+  singleSuspended = false;
+  initialLandingPending = false;
+  appliedReveal = null;
   const stateFilePath = resolveViewedFilePath(process.env, process.platform, homedir());
   let saveFailureNotified = false;
 
@@ -514,6 +698,7 @@ export default function (hunk: HunkExtensionAPI) {
     if (getSearchState().query !== "") {
       rebuildVisibleHits();
       ctx.highlights.refresh(SEARCH_HIGHLIGHTER_ID, { fileId: file.id });
+      void scanGapHitsAcrossFiles(ctx);
     }
   });
 
@@ -600,9 +785,14 @@ export default function (hunk: HunkExtensionAPI) {
     // The target is seeded by the `singleFile` command before entry (selection can be debounced
     // by the time onEnter runs), so entry only needs to reload with that target in effect.
     onEnter(ctx) {
+      if (singleSuspended) {
+        singleSuspended = false;
+        return;
+      }
       ctx.commands.execute("hunk.app.refresh");
     },
     onExit(ctx) {
+      if (singleSuspended) return;
       const { targetPath } = getSingleFileState();
       exitSingleFile(targetPath);
       ctx.commands.execute("hunk.app.refresh");
